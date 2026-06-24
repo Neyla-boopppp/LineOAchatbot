@@ -1,0 +1,28 @@
+{
+  "name": "rocksgroup-line-hr-bot",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.105.0",
+    "@line/bot-sdk": "^11.0.2",
+    "@vercel/kv": "^3.0.0",
+    "groq-sdk": "^1.2.1",
+    "next": "14.2.29",
+    "react": "^18",
+    "react-dom": "^18"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "eslint": "^8",
+    "eslint-config-next": "14.2.29",
+    "typescript": "^5"
+  }
+}
