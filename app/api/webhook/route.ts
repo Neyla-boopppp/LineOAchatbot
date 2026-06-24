@@ -43,7 +43,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: 'Bad Request' }, { status: 400 })
   }
 
-  Promise.all(events.map(handleEvent)).catch((err) =>
+  await Promise.all(events.map(handleEvent)).catch((err) =>
     console.error('[webhook] Unhandled error:', err)
   )
 
