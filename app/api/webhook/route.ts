@@ -125,7 +125,7 @@ async function runMenuAction(
   }
   // contact → เข้าสู่โหมด handover + แจ้ง HR
   if (userId) await setState(userId, { phase: 'handover' })
-  notifyHrHandover(displayName, { brand: state?.brand, position: state?.position, branch: state?.branch }).catch(() => {})
+  await notifyHrHandover(displayName, { brand: state?.brand, position: state?.position, branch: state?.branch }).catch(() => {})
   await sendReply(replyToken, HANDOVER_MESSAGE)
 }
 
@@ -181,7 +181,7 @@ async function handleEvent(event: webhook.Event): Promise<void> {
         if (userId) displayName = (await getLineClient().getProfile(userId)).displayName
       } catch {}
 
-      notifyHrApplicant(
+      await notifyHrApplicant(
         displayName,
         state?.brand,
         state?.position,
@@ -230,7 +230,7 @@ async function handleEvent(event: webhook.Event): Promise<void> {
       await sendReply(replyToken, 'กลับมาคุยกับพี่ร็อคกี้แล้วนะคะ 😊 มีอะไรให้ช่วยตรวจสอบไหมคะ? (แบรนด์ / ตำแหน่ง / สาขา)')
       return
     }
-    notifyHrGroup(displayName, userText).catch(() => {})
+    await notifyHrGroup(displayName, userText).catch(() => {})
     return
   }
 
@@ -424,18 +424,18 @@ async function handleEvent(event: webhook.Event): Promise<void> {
       replyText = replies
     } else if (ageRejected) {
       // อายุไม่ตรงเกณฑ์ (สัญชาติไทย/ไม่ระบุ) → แจ้ง HR เตรียมพิจารณา แล้วจบ ไม่ถามซ้ำ
-      notifyHrApplicant(displayName, state.brand, state.position, state.branch, 'ผู้สมัครอายุไม่ตรงเกณฑ์ที่กำหนด รบกวน HR พิจารณาเพิ่มเติมค่ะ').catch(() => {})
+      await notifyHrApplicant(displayName, state.brand, state.position, state.branch, 'ผู้สมัครอายุไม่ตรงเกณฑ์ที่กำหนด รบกวน HR พิจารณาเพิ่มเติมค่ะ').catch(() => {})
       if (userId) await setState(userId, { phase: 'collecting_info' })
       replyText = replies
     } else {
       // ผ่านเกณฑ์ครบ (สัญชาติไทย + อายุ 19-35) → แจ้ง HR เตรียมติดต่อกลับ
-      notifyHrApplicant(displayName, state.brand, state.position, state.branch).catch(() => {})
+      await notifyHrApplicant(displayName, state.brand, state.position, state.branch).catch(() => {})
       if (userId) await setState(userId, { phase: 'collecting_info' })
       replyText = 'ขอบคุณค่ะ 😊 ทีม HR จะติดต่อกลับหาคุณเร็วๆ นี้นะคะ หากมีคำถามเพิ่มเติม สามารถสอบถามพี่ร็อคกี้ได้เลยค่ะ'
     }
   } else if (state.phase === 'awaiting_documents') {
     if (userId) await setState(userId, { phase: 'collecting_info' })
-    notifyHrApplicant(displayName, state.brand, state.position, state.branch, 'ผู้สมัครส่งเอกสารแล้ว รบกวน HR เข้าไปคุยต่อด้วยนะคะ').catch(() => {})
+    await notifyHrApplicant(displayName, state.brand, state.position, state.branch, 'ผู้สมัครส่งเอกสารแล้ว รบกวน HR เข้าไปคุยต่อด้วยนะคะ').catch(() => {})
     replyText = 'ขอบคุณค่ะ 😊 ทีม HR ได้รับข้อมูลแล้ว จะติดต่อกลับหาคุณเร็วๆ นี้นะคะ'
   } else {
     // Safety net: state 'ready' ที่อาจค้างอยู่ → reset แล้วตอบเหมือน flow ใหม่
@@ -540,7 +540,7 @@ async function buildReply(userText: string, displayName: string): Promise<string
 
   if (!matched.length) {
     console.log('[webhook] No jobs matched, sending default')
-    notifyHrGroup(displayName, userText).catch(() => {})
+    await notifyHrGroup(displayName, userText).catch(() => {})
     return DEFAULT_MESSAGE
   }
 
@@ -548,14 +548,14 @@ async function buildReply(userText: string, displayName: string): Promise<string
 
   const answer = await generateReply(jobsText, userText)
   if (!answer || answer === DEFAULT_REPLY) {
-    notifyHrGroup(displayName, userText).catch(() => {})
+    await notifyHrGroup(displayName, userText).catch(() => {})
     return DEFAULT_MESSAGE
   }
 
   const ok = await doubleCheck(jobsText, userText, answer)
   if (!ok) {
     console.warn('[webhook] Double-check failed, sending default')
-    notifyHrGroup(displayName, userText).catch(() => {})
+    await notifyHrGroup(displayName, userText).catch(() => {})
     return DEFAULT_MESSAGE
   }
 
