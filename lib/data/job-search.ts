@@ -62,11 +62,13 @@ export function filterJobs(jobs: JobListing[], userText: string): JobListing[] {
     return candidates
   }
 
+  const isBranchListQuery = /สาขาไหน|สาขาใด|สาขาอะไร|มีสาขา|เปิดสาขา/.test(userText)
+
   const scored = candidates
     .map((job) => ({ job, score: scoreRow(job, tokens) }))
     .filter(({ score }) => score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 5)
+    .slice(0, isBranchListQuery ? 15 : 5)
     .map(({ job }) => job)
 
   return scored.length ? scored : candidates
@@ -74,12 +76,14 @@ export function filterJobs(jobs: JobListing[], userText: string): JobListing[] {
 
 export function formatJobsForAI(jobs: JobListing[]): string {
   if (!jobs.length) return '(ไม่มีข้อมูลตำแหน่งที่ตรงกับคำถาม)'
-  return jobs
-    .map(
-      (j) =>
-        `[${j.id}] ${j.brand} | ${j.jobTitle} | ${j.branch} | ${j.jobType} | ${j.salary} | ${j.status}`
-    )
-    .join('\n')
+
+  const header = '| ID | แบรนด์ | ตำแหน่ง | สาขา | ประเภท | เงินเดือน | สถานะ |'
+  const divider = '|---|---|---|---|---|---|---|'
+  const rows = jobs.map(
+    (j) =>
+      `| ${j.id} | ${j.brand} | ${j.jobTitle} | ${j.branch} | ${j.jobType} | ${j.salary} | ${j.status} |`
+  )
+  return [header, divider, ...rows].join('\n')
 }
 
 export function formatJobDetail(job: JobListing): string {

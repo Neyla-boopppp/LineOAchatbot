@@ -2,13 +2,43 @@ import { NextRequest, NextResponse } from 'next/server'
 import { messagingApi, webhook, validateSignature } from '@line/bot-sdk'
 import { fetchJobs } from '@/lib/data/sheet'
 import { filterJobs, formatJobsForAI, isOpen } from '@/lib/data/job-search'
-import { generateReply, doubleCheck, DEFAULT_REPLY, extractApplicationInfo, extractScreeningInfo } from '@/lib/ai/groq'
-import { notifyHrGroup, notifyHrApplicant } from '@/lib/line/notify'
-import { getState, setState, WELCOME_MESSAGE, NON_THAI_DOCS, buildSummaryMessage, buildMissingMessage } from '@/lib/session/screening'
+import { generateReply, doubleCheck, DEFAULT_REPLY, extractApplicationInfo, extractScreeningInfo, resolveBranchName, type KnownJobValues } from '@/lib/ai/groq'
+import { notifyHrGroup, notifyHrApplicant, notifyHrHandover } from '@/lib/line/notify'
+import { getState, setState, WELCOME_MESSAGE, NON_THAI_DOCS, buildSummaryMessage, buildMissingMessage, type UserState } from '@/lib/session/screening'
 
 export const maxDuration = 30
 
 const DEFAULT_MESSAGE = 'คำถามนี้ขอส่งต่อให้ HR ดูแลค่ะ กรุณารอสักครู่นะคะ 😊'
+
+// ข้อความที่ปุ่ม Rich Menu (message action) อาจส่งมา — รับหลายรูปคำ (label form + keyword form)
+// match แบบ normalize ทั้งข้อความ จึงปลอดภัยจาก false-positive (ผู้ใช้ต้องพิมพ์ตรงเป๊ะ)
+const RICH_MENU_JOBS_TEXTS = ['ตำแหน่งงานว่าง', 'ตำแหน่งงานว่างด่วน', 'งานว่างด่วน']
+const RICH_MENU_DOCS_TEXTS = ['เอกสารที่จำเป็นต้องใช้ในการสมัคร', 'เอกสารจำเป็น', 'เอกสารที่จำเป็น']
+const RICH_MENU_CONTACT_TEXTS = ['ติดต่อเจ้าหน้าที่', 'คุยกับเจ้าหน้าที่', 'ติดต่อ hr']
+
+const DOCS_MESSAGE = `ถ้าเป็นคนสัญชาติไทยเตรียมเอกสารตามนี้นะคะ 😊
+1. รูปถ่าย
+2. สำเนาบัตรประชาชน
+3. สำเนาทะเบียนบ้าน
+4. สำเนาวุฒิ
+5. Book Bank ธนาคารกสิกรไทย
+
+แต่ถ้าไม่ใช่คนสัญชาติไทย รบกวนเตรียมเอกสารให้เจ้าหน้าที่ 4 อย่างนะคะ
+1. วีซ่า
+2. พาสปอร์ต
+3. ใบอนุญาตทำงาน
+4. Smart card บัตรอนุญาตทำงาน`
+
+const HANDOVER_MESSAGE = `กรุณารอสักครู่นะคะ เดี๋ยวจะมีพี่เจ้าหน้าที่ HR เข้ามาตอบให้ค่ะ 😊
+(ระหว่างนี้หากต้องการกลับมาใช้ระบบอัตโนมัติ พิมพ์ "คุยกับบอท" ได้ทุกเมื่อนะคะ)`
+
+// แปลงคำเรียกตำแหน่งภาษาไทยหลวมๆ → ชื่อตำแหน่งอังกฤษที่ใช้จริงใน Sheet
+const positionSynonyms: Record<string, string[]> = {
+  'steward': ['พนักงานล้างจาน', 'ล้างจาน', 'สจ๊วต', 'ล้างถ้วย'],
+  'service staff': ['บริการ', 'พนักงานเสิร์ฟ', 'เสิร์ฟ', 'ต้อนรับ', 'หน้าร้าน'],
+  'tl': ['หัวหน้างาน', 'ผู้จัดการสาขา', 'หัวหน้า', 'หัวหน้าทีม'],
+  'tm': ['พนักงานทั่วไป', 'ทีมงาน'],
+}
 
 let lineClient: messagingApi.MessagingApiClient | null = null
 
@@ -39,6 +69,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
     const parsed = JSON.parse(body) as webhook.CallbackRequest
     events = parsed.events ?? []
+
   } catch {
     return NextResponse.json({ error: 'Bad Request' }, { status: 400 })
   }
@@ -50,7 +81,84 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   return NextResponse.json({ status: 'ok' })
 }
 
+type MenuIntent = 'jobs' | 'docs' | 'contact'
+
+function normalizeMenu(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, '')
+}
+
+// match ข้อความทั้งก้อนกับชุดคำของปุ่ม (normalize) — คืน intent หรือ null
+// match ทั้งข้อความ จึงปลอดภัยจาก false-positive (ผู้ใช้ต้องพิมพ์ตรงกับปุ่ม)
+function detectRichMenuIntent(text: string): MenuIntent | null {
+  const n = normalizeMenu(text)
+  if (RICH_MENU_JOBS_TEXTS.some((t) => normalizeMenu(t) === n)) return 'jobs'
+  if (RICH_MENU_DOCS_TEXTS.some((t) => normalizeMenu(t) === n)) return 'docs'
+  if (RICH_MENU_CONTACT_TEXTS.some((t) => normalizeMenu(t) === n)) return 'contact'
+  return null
+}
+
+// แปลง postback data → intent (เผื่ออนาคตเปลี่ยน Rich Menu เป็น postback action เช่น data="menu=jobs")
+function parsePostbackIntent(data: string | undefined): MenuIntent | null {
+  if (!data) return null
+  const d = data.toLowerCase()
+  if (d.includes('job')) return 'jobs'
+  if (d.includes('doc')) return 'docs'
+  if (d.includes('contact') || d.includes('hr') || d.includes('staff')) return 'contact'
+  return null
+}
+
+// ดำเนินการตาม Rich Menu intent — ใช้ร่วมกันทั้ง text action และ postback
+async function runMenuAction(
+  intent: MenuIntent,
+  replyToken: string,
+  userId: string | undefined,
+  displayName: string,
+  state: UserState | undefined,
+): Promise<void> {
+  if (intent === 'docs') {
+    await sendReply(replyToken, DOCS_MESSAGE)
+    return
+  }
+  if (intent === 'jobs') {
+    await sendReply(replyToken, await buildJobsListReply())
+    return
+  }
+  // contact → เข้าสู่โหมด handover + แจ้ง HR
+  if (userId) await setState(userId, { phase: 'handover' })
+  notifyHrHandover(displayName, { brand: state?.brand, position: state?.position, branch: state?.branch }).catch(() => {})
+  await sendReply(replyToken, HANDOVER_MESSAGE)
+}
+
+// Postback event (เผื่อ Rich Menu ใช้ postback action ในอนาคต) — map ไป intent เดียวกับ text
+async function handlePostback(event: webhook.PostbackEvent): Promise<void> {
+  const replyToken = event.replyToken
+  if (!replyToken) return
+  const intent = parsePostbackIntent(event.postback?.data)
+  if (!intent) return
+
+  const userId = 'source' in event ? (event.source as webhook.UserSource).userId : undefined
+  const state = userId ? await getState(userId) : undefined
+  let displayName = 'ไม่ทราบชื่อ'
+  try {
+    if (userId) displayName = (await getLineClient().getProfile(userId)).displayName
+  } catch {}
+
+  await runMenuAction(intent, replyToken, userId, displayName, state)
+}
+
+// รับเฉพาะแชต 1:1 (source.type === 'user') — กันข้อความจากกลุ่ม/ห้อง (เช่น กลุ่ม HR)
+// ไม่ให้บอทเผลอตอบกลับเข้ากลุ่มเวลา HR พิมพ์คุยกัน
+function isUserSource(event: webhook.Event): boolean {
+  return 'source' in event && event.source?.type === 'user'
+}
+
 async function handleEvent(event: webhook.Event): Promise<void> {
+  if (!isUserSource(event)) return
+
+  if (event.type === 'postback') {
+    await handlePostback(event as webhook.PostbackEvent)
+    return
+  }
   if (event.type !== 'message') return
 
   const replyToken = (event as webhook.MessageEvent).replyToken
@@ -60,13 +168,36 @@ async function handleEvent(event: webhook.Event): Promise<void> {
   const state = userId ? await getState(userId) : undefined
 
   if (event.message.type !== 'text') {
-    if (state?.phase === 'awaiting_documents') {
+    // แจ้ง HR เมื่อผู้สมัครส่ง รูป/วิดีโอ/ไฟล์ (อาจเป็นเอกสารสมัครงาน) ในทุกเฟส
+    // ไม่นับสติกเกอร์/ตำแหน่ง/เสียง เพื่อไม่ให้ HR โดนสแปม
+    const isDocLike =
+      event.message.type === 'image' ||
+      event.message.type === 'video' ||
+      event.message.type === 'file'
+
+    if (isDocLike) {
       let displayName = 'ไม่ทราบชื่อ'
       try {
         if (userId) displayName = (await getLineClient().getProfile(userId)).displayName
       } catch {}
-      if (userId) await setState(userId, { phase: 'ready', brand: state.brand, position: state.position, branch: state.branch })
-      notifyHrApplicant(displayName, state.brand, state.position, state.branch, 'ผู้สมัครส่งเอกสารแล้ว รบกวน HR เข้าไปคุยต่อด้วยนะคะ').catch(() => {})
+
+      notifyHrApplicant(
+        displayName,
+        state?.brand,
+        state?.position,
+        state?.branch,
+        'ผู้สมัครส่งเอกสารมาแล้ว รบกวน HR เข้าไปเช็กในแชตด้วยนะคะ',
+      ).catch(() => {})
+
+      // เฟสรอเอกสาร (ต่างชาติ) → ถือว่าส่งเอกสารแล้ว คืนสู่ collecting_info
+      if (state?.phase === 'awaiting_documents' && userId) {
+        await setState(userId, { phase: 'collecting_info' })
+      }
+
+      // ตอบรับผู้สมัคร — ยกเว้นโหมด handover ที่บอทควรเงียบ (ปล่อยให้ HR คุยเอง)
+      if (state?.phase !== 'handover') {
+        await sendReply(replyToken, 'ได้รับรูป/เอกสารแล้วนะคะ 🙏 ทีม HR จะเข้าไปตรวจสอบและติดต่อกลับเร็วๆ นี้ค่ะ 😊')
+      }
     }
     return
   }
@@ -82,6 +213,64 @@ async function handleEvent(event: webhook.Event): Promise<void> {
     }
   } catch {}
 
+  const menuIntent = detectRichMenuIntent(userText)
+
+  // ── Rich Menu (อ่านข้อมูล): ทำงานได้เสมอ แม้อยู่ในโหมด handover — return ก่อนแตะ state จึงไม่ออกจาก handover ──
+  if (menuIntent === 'docs' || menuIntent === 'jobs') {
+    await runMenuAction(menuIntent, replyToken, userId, displayName, state)
+    return
+  }
+
+  // ── Handover Mode ──
+  // - พิมพ์ keyword "คุยกับบอท" → ออกจากโหมด กลับมาใช้ระบบอัตโนมัติ
+  // - นอกนั้น → forward ข้อความเข้ากลุ่ม HR (บอทไม่ตอบเอง)
+  if (state?.phase === 'handover') {
+    if (looksLikeResumeBot(userText)) {
+      if (userId) await setState(userId, { phase: 'collecting_info' })
+      await sendReply(replyToken, 'กลับมาคุยกับพี่ร็อคกี้แล้วนะคะ 😊 มีอะไรให้ช่วยตรวจสอบไหมคะ? (แบรนด์ / ตำแหน่ง / สาขา)')
+      return
+    }
+    notifyHrGroup(displayName, userText).catch(() => {})
+    return
+  }
+
+  // ── Rich Menu: ติดต่อเจ้าหน้าที่ → เข้าสู่โหมด handover (เฉพาะคนที่ยังไม่อยู่ในโหมด) ──
+  if (menuIntent === 'contact') {
+    await runMenuAction('contact', replyToken, userId, displayName, state)
+    return
+  }
+
+  // ── History: เก็บ 4 ข้อความล่าสุดของผู้ใช้เพื่อส่งเป็น context ──
+  const prevHistory = state?.history ?? []
+  const updatedHistory = [...prevHistory, userText].slice(-4)
+
+  // ── Change Intent: จับ intent "เปลี่ยน" ก่อน phase logic ──
+  const changeTarget = state ? detectChangeIntent(userText) : null
+  if (changeTarget) {
+    let newState: Parameters<typeof setState>[1]
+    let changeMsg: string
+    if (changeTarget === 'all' || changeTarget === 'brand') {
+      newState = { phase: 'collecting_info', history: updatedHistory }
+      changeMsg = 'ได้เลยค่ะ 😊 เริ่มใหม่เลยนะคะ รบกวนระบุแบรนด์ ตำแหน่ง และสาขาที่ต้องการสมัครค่ะ'
+    } else if (changeTarget === 'position') {
+      newState = { phase: 'collecting_info', brand: state!.brand, history: updatedHistory }
+      changeMsg = `ได้เลยค่ะ 😊${state!.brand ? ` (${state!.brand})` : ''} ระบุตำแหน่งงานที่ต้องการสมัครใหม่ได้เลยค่ะ`
+    } else {
+      newState = { phase: 'collecting_info', brand: state!.brand, position: state!.position, history: updatedHistory }
+      const hint = [state!.position, state!.brand].filter(Boolean).join(' ของ ')
+      changeMsg = `ได้เลยค่ะ 😊${hint ? ` (${hint})` : ''} ระบุสาขาที่สะดวกใหม่ได้เลยค่ะ`
+    }
+    if (userId) await setState(userId, newState)
+    await sendReply(replyToken, changeMsg)
+    return
+  }
+
+  // ── Small Talk: ทักทายทั่วไป — ตอบเป็นกันเอง ไม่เปลี่ยน state ไม่แจ้ง HR ──
+  if (state && looksLikeSmallTalk(userText)) {
+    await sendReply(replyToken, 'สวัสดีค่ะ 😊 ดีใจที่ได้คุยด้วยนะคะ มีข้อมูลส่วนไหนให้พี่ร็อคกี้ช่วยตรวจสอบไหมคะ?')
+    return
+  }
+
   const FOLLOW_UP_Q = 'ก่อนอื่นขอสอบถามข้อมูลเบื้องต้นก่อนนะคะ 😊 สัญชาติอะไร อายุเท่าไหร่ เพศอะไรคะ?'
   let replyText: string | string[]
 
@@ -89,12 +278,28 @@ async function handleEvent(event: webhook.Event): Promise<void> {
     if (userId) await setState(userId, { phase: 'collecting_info' })
     replyText = WELCOME_MESSAGE
   } else if (state.phase === 'collecting_info') {
-    const extracted = await extractApplicationInfo(userText)
+    // fetch jobs ก่อน เพื่อส่งชื่อสาขา/ตำแหน่งจริงจาก Sheet ให้ LLM map ได้ถูกต้อง
+    const jobs = await fetchJobs()
+
+    // กรอง known values ตาม brand ที่รู้อยู่แล้ว (ถ้ายังไม่รู้ → ส่งทั้งหมด แต่จำกัด 40 รายการ)
+    const brandFilter = state.brand
+    const jobsForContext = brandFilter
+      ? jobs.filter((j) => j.brand.toLowerCase().includes(brandFilter.toLowerCase()))
+      : jobs
+    const known: KnownJobValues = {
+      branches: Array.from(new Set(jobsForContext.map((j) => j.branch))).slice(0, 40),
+      positions: Array.from(new Set(jobsForContext.map((j) => j.jobTitle))).slice(0, 50),
+    }
+
+    const extracted = await extractApplicationInfo(userText, known, updatedHistory)
     const brand = extracted.brand ?? state.brand
-    const position = extracted.position ?? state.position
+    // Synonym mapping: คำไทยหลวมๆ (เช่น "พนักงานล้างจาน") → ชื่อตำแหน่งอังกฤษในระบบ ("steward")
+    // ทำก่อน filter และให้มาก่อนผล LLM เพื่อกัน hallucination (เช่น แมปผิดเป็น "Runner")
+    const synonymPosition = detectPositionSynonym(userText)
+    const position = synonymPosition ?? extracted.position ?? state.position
     const branch = extracted.branch ?? state.branch
 
-    if (userId) await setState(userId, { phase: 'collecting_info', brand, position, branch })
+    if (userId) await setState(userId, { phase: 'collecting_info', brand, position, branch, history: updatedHistory })
 
     const missing: string[] = []
     if (!brand) missing.push('ชื่อแบรนด์ที่ต้องการสมัคร')
@@ -105,30 +310,90 @@ async function handleEvent(event: webhook.Event): Promise<void> {
 
     if (nothingExtracted && !looksLikeQuestion(userText) && missing.length === 0) return
 
-    if (missing.length === 0) {
-      const header = buildSummaryMessage(brand!, position!, branch!)
-      const jobs = await fetchJobs()
-      const matched = filterJobs(jobs, `${brand} ${position} ${branch}`)
-
-      const jobIsOpen = matched.length > 0 && matched.some((j) => isOpen(j.status))
-
-      let jobInfo: string | null = null
-      if (matched.length > 0) {
-        const jobsText = formatJobsForAI(matched)
-        jobInfo = await generateReply(jobsText, `ตำแหน่ง ${position!} สาขา ${branch!} ของ ${brand!} เปิดรับสมัครหรือปิดรับสมัครอยู่คะ?`)
-      }
-
-      const firstMsg =
-        jobInfo && jobInfo !== DEFAULT_REPLY
-          ? `${header}\n\n${jobInfo}`
-          : `${header}\n\nทางทีมงานจะรีบตรวจสอบข้อมูลและติดต่อกลับไปโดยเร็วที่สุดเลยค่ะ 🙏`
-
-      if (jobIsOpen) {
-        if (userId) await setState(userId, { phase: 'awaiting_screening', brand, position, branch })
-        replyText = [firstMsg, FOLLOW_UP_Q]
+    // ── Browse Intent: ผู้ใช้ถามว่ามีตำแหน่งไหนเปิดรับ โดยระบุแค่แบรนด์ ──
+    const browseBrand = extracted.brand ?? state.brand
+    if (looksLikeBrowseIntent(userText) && !!browseBrand && !extracted.position) {
+      const normStr = (s: string) => s.toLowerCase().replace(/[-\s]+/g, '')
+      const openJobs = jobs.filter(
+        (j) => normStr(j.brand).includes(normStr(browseBrand)) && isOpen(j.status)
+      )
+      const uniquePositions = Array.from(new Set(openJobs.map((j) => j.jobTitle)))
+      if (userId) await setState(userId, { phase: 'collecting_info', brand: browseBrand, history: updatedHistory })
+      if (uniquePositions.length === 0) {
+        replyText = `ขณะนี้ ${browseBrand} ยังไม่มีตำแหน่งที่เปิดรับสมัครค่ะ 😔 หากต้องการสอบถามเพิ่มเติม พี่ร็อคกี้ยินดีช่วยเสมอนะคะ`
       } else {
-        if (userId) await setState(userId, { phase: 'collecting_info' })
-        replyText = [firstMsg, 'สนใจตำแหน่งอื่นหรือสาขาอื่นไหมคะ']
+        const posList = uniquePositions.map((p) => `• ${p}`).join('\n')
+        replyText = `ตอนนี้ ${browseBrand} เปิดรับสมัครตำแหน่งเหล่านี้อยู่ค่ะ 😊\n\n${posList}\n\nสนใจตำแหน่งไหน บอกพี่ร็อคกี้ได้เลยนะคะ`
+      }
+    } else if (missing.length === 0) {
+      // Step 1: filter เฉพาะ brand + position (ยังไม่กรอง branch เพราะชื่ออาจต่างภาษา)
+      const normStr = (s: string) => s.toLowerCase().replace(/[-\s]+/g, '')
+      const byBrandPos = jobs.filter((j) => {
+        const normBrand = normStr(j.brand)
+        const normTitle = normStr(j.jobTitle)
+        const normBrandQuery = normStr(brand!)
+        const normPosQuery = normStr(position!)
+        return (
+          normBrand.includes(normBrandQuery) &&
+          (normTitle.includes(normPosQuery) || normPosQuery.includes(normTitle))
+        )
+      })
+
+      // ชื่อตำแหน่งจริงจาก Sheet สำหรับแสดงผล — กัน hallucination ชื่อตำแหน่งที่ผู้ใช้ไม่ได้พิมพ์
+      const displayPosition = byBrandPos.length > 0 ? byBrandPos[0].jobTitle : position!
+
+      if (byBrandPos.length === 0) {
+        // brand หรือ position ไม่มีในระบบเลย
+        if (userId) await setState(userId, { phase: 'collecting_info', history: updatedHistory })
+        replyText = `ขออภัยค่ะ ไม่พบตำแหน่ง "${position!}" สำหรับ ${brand!} ในระบบค่ะ\nลองระบุแบรนด์หรือตำแหน่งใหม่ได้เลยนะคะ 😊`
+      } else {
+        // Step 2: resolve branch — LLM map ชื่อที่ผู้ใช้พิมพ์ → ชื่อจริงใน Sheet
+        const knownBranchesForPos = Array.from(new Set(byBrandPos.map((j) => j.branch)))
+        const resolvedBranch = await resolveBranchName(branch!, knownBranchesForPos)
+
+        if (!resolvedBranch) {
+          // ไม่มีสาขานี้ในระบบ — เก็บ brand+position ไว้ ให้ผู้สมัครระบุสาขาใหม่
+          if (userId) await setState(userId, { phase: 'collecting_info', brand, position })
+          replyText = [
+            buildSummaryMessage(brand!, displayPosition, branch!),
+            `ขออภัยค่ะ ไม่มีสาขา "${branch!}" สำหรับตำแหน่ง ${displayPosition} ค่ะ\nสาขาที่เปิดให้บริการ:\n${formatBranchList(knownBranchesForPos)}\n\nระบุสาขาที่สะดวกได้เลยนะคะ 😊`,
+          ]
+        } else {
+          // Step 3: ได้ชื่อสาขาจริงแล้ว — match และตรวจสถานะ
+          const matched = byBrandPos.filter((j) => j.branch === resolvedBranch)
+          const header = buildSummaryMessage(brand!, displayPosition, resolvedBranch)
+          const jobIsOpen = matched.some((j) => isOpen(j.status))
+          const jobsText = formatJobsForAI(matched)
+          const jobInfo = await generateReply(
+            jobsText,
+            `ตำแหน่ง ${displayPosition} สาขา ${resolvedBranch} ของ ${brand!} เปิดรับสมัครหรือปิดรับสมัครอยู่คะ?`
+          )
+
+          const statusMsg =
+            jobInfo && jobInfo !== DEFAULT_REPLY
+              ? jobInfo
+              : jobIsOpen
+              ? 'ตอนนี้เปิดรับสมัครอยู่ค่ะ 🎉'
+              : 'ตอนนี้ปิดรับสมัครชั่วคราวค่ะ'
+
+          const firstMsg = `${header}\n\n${statusMsg}`
+
+          if (jobIsOpen) {
+            if (userId) await setState(userId, { phase: 'awaiting_screening', brand, position, branch: resolvedBranch, history: updatedHistory })
+            replyText = [firstMsg, FOLLOW_UP_Q]
+          } else {
+            if (userId) await setState(userId, { phase: 'collecting_info', brand, position, history: updatedHistory })
+            const openBranches = Array.from(new Set(
+              byBrandPos
+                .filter((j) => isOpen(j.status) && j.branch !== resolvedBranch)
+                .map((j) => j.branch)
+            ))
+            const altMsg = openBranches.length > 0
+              ? `✅ สาขาที่ยังเปิดรับสมัคร ${displayPosition} อยู่ตอนนี้:\n${formatBranchList(openBranches)}`
+              : 'ขณะนี้ตำแหน่งนี้ยังไม่มีสาขาอื่นที่เปิดรับสมัครค่ะ สนใจตำแหน่งอื่นไหมคะ?'
+            replyText = [firstMsg, altMsg]
+          }
+        }
       }
     } else if (nothingExtracted && looksLikeQuestion(userText)) {
       replyText = await buildReply(userText, displayName)
@@ -139,39 +404,129 @@ async function handleEvent(event: webhook.Event): Promise<void> {
     const screening = await extractScreeningInfo(userText)
     const replies: string[] = []
 
+    const ageRejected = screening.age !== null && (screening.age < 19 || screening.age > 35)
     if (screening.age !== null && screening.age < 19) {
       replies.push('ทางเราจะรับอายุ 19 ปีบริบูรณ์ขึ้นไปค่ะ')
     }
-
     if (screening.age !== null && screening.age > 35) {
       replies.push('ทางเราจะรับถึงอายุ 35 ปีค่ะ')
     }
 
-    if (screening.isThai === false) {
-      replies.push(NON_THAI_DOCS)
-    }
-
-    if (screening.isThai === false) {
-      if (userId) await setState(userId, { phase: 'awaiting_documents', brand: state.brand, position: state.position, branch: state.branch })
-    } else {
-      if (userId) await setState(userId, { phase: 'ready', brand: state.brand, position: state.position, branch: state.branch })
-    }
-
-    if (replies.length === 0) {
-      notifyHrApplicant(displayName, state.brand, state.position, state.branch).catch(() => {})
-      replyText = 'ขอบคุณค่ะ 😊 ทีม HR จะติดต่อกลับหาคุณเร็วๆ นี้นะคะ หากมีคำถามเพิ่มเติม สามารถสอบถามพี่ร็อคกี้ได้เลยค่ะ'
-    } else {
+    // ลำดับการตัดสิน — แต่ละกรณีจบในตัวเอง ไม่วนกลับไปถาม "สัญชาติ อายุ เพศ" ซ้ำ
+    if (screening.isThai === null && !ageRejected) {
+      // ยังไม่ระบุสัญชาติ และอายุยังไม่ติดเงื่อนไข → ถามเฉพาะสัญชาติ คง phase เดิม
+      replies.push('รบกวนระบุสัญชาติด้วยนะคะ 😊 (เช่น ไทย หรือ ต่างชาติ)')
       replyText = replies
+    } else if (screening.isThai === false) {
+      // ต่างชาติ → แจ้งเอกสาร 4 อย่าง แล้วเปลี่ยน state ไปรอรับเอกสาร (จบ ไม่ถามซ้ำ)
+      replies.push(NON_THAI_DOCS)
+      if (userId) await setState(userId, { phase: 'awaiting_documents', brand: state.brand, position: state.position, branch: state.branch })
+      replyText = replies
+    } else if (ageRejected) {
+      // อายุไม่ตรงเกณฑ์ (สัญชาติไทย/ไม่ระบุ) → แจ้ง HR เตรียมพิจารณา แล้วจบ ไม่ถามซ้ำ
+      notifyHrApplicant(displayName, state.brand, state.position, state.branch, 'ผู้สมัครอายุไม่ตรงเกณฑ์ที่กำหนด รบกวน HR พิจารณาเพิ่มเติมค่ะ').catch(() => {})
+      if (userId) await setState(userId, { phase: 'collecting_info' })
+      replyText = replies
+    } else {
+      // ผ่านเกณฑ์ครบ (สัญชาติไทย + อายุ 19-35) → แจ้ง HR เตรียมติดต่อกลับ
+      notifyHrApplicant(displayName, state.brand, state.position, state.branch).catch(() => {})
+      if (userId) await setState(userId, { phase: 'collecting_info' })
+      replyText = 'ขอบคุณค่ะ 😊 ทีม HR จะติดต่อกลับหาคุณเร็วๆ นี้นะคะ หากมีคำถามเพิ่มเติม สามารถสอบถามพี่ร็อคกี้ได้เลยค่ะ'
     }
   } else if (state.phase === 'awaiting_documents') {
-    if (userId) await setState(userId, { phase: 'ready', brand: state.brand, position: state.position, branch: state.branch })
+    if (userId) await setState(userId, { phase: 'collecting_info' })
     notifyHrApplicant(displayName, state.brand, state.position, state.branch, 'ผู้สมัครส่งเอกสารแล้ว รบกวน HR เข้าไปคุยต่อด้วยนะคะ').catch(() => {})
-    return
+    replyText = 'ขอบคุณค่ะ 😊 ทีม HR ได้รับข้อมูลแล้ว จะติดต่อกลับหาคุณเร็วๆ นี้นะคะ'
   } else {
+    // Safety net: state 'ready' ที่อาจค้างอยู่ → reset แล้วตอบเหมือน flow ใหม่
+    if (state?.phase === 'ready' && userId) await setState(userId, { phase: 'collecting_info' })
     replyText = await buildReply(userText, displayName)
   }
 
   await sendReply(replyToken, replyText)
+}
+
+async function buildJobsListReply(): Promise<string> {
+  const jobs = await fetchJobs()
+  const openJobs = jobs.filter((j) => isOpen(j.status))
+
+  if (openJobs.length === 0) {
+    return 'ขณะนี้ยังไม่มีตำแหน่งที่เปิดรับสมัครค่ะ 😔 หากมีข่าวสารจะรีบแจ้งนะคะ'
+  }
+
+  // brand → position → branches[] (ยุบสาขาของตำแหน่งเดียวกันมาบรรทัดเดียว, คงลำดับที่พบ)
+  const brandOrder: string[] = []
+  const byBrand: Record<string, Record<string, string[]>> = {}
+  for (const job of openJobs) {
+    if (!byBrand[job.brand]) { byBrand[job.brand] = {}; brandOrder.push(job.brand) }
+    const posMap = byBrand[job.brand]
+    if (!posMap[job.jobTitle]) posMap[job.jobTitle] = []
+    if (!posMap[job.jobTitle].includes(job.branch)) posMap[job.jobTitle].push(job.branch)
+  }
+
+  // แต่ละแบรนด์เป็น 1 block — เว้น 1 บรรทัดว่างคั่นระหว่าง block ให้อ่านง่ายใน LINE
+  const brandBlocks = brandOrder.map((brand) => {
+    const posMap = byBrand[brand]
+    const bullets = Object.keys(posMap)
+      .map((position) => `• ตำแหน่ง ${position} - สาขา ${posMap[position].join(', ')}`)
+      .join('\n')
+    return `🏢 แบรนด์ ${brand}:\n${bullets}`
+  })
+
+  const header = 'อัปเดตตำแหน่งงานว่างของ Rocks Group ประจำวันนี้ค่ะ 🚀'
+  const cta = '👇 สนใจอยากสมัครแบรนด์ไหน ตำแหน่งอะไร และสาขาไหน พิมพ์บอกพี่ร็อคกี้มาได้เลยนะคะ 😊'
+
+  return `${header}\n\n${brandBlocks.join('\n\n')}\n\n${cta}`
+}
+
+// ตรวจจับคำเรียกตำแหน่งภาษาไทยจากข้อความผู้ใช้ → คืนชื่อตำแหน่งอังกฤษที่เป็น key
+// - ทั้งข้อความตรงกับ synonym/key เป๊ะ → คืนทันที (มั่นใจสุด)
+// - ถ้าเจอ synonym เป็นส่วนหนึ่งของข้อความ → เลือก match ที่ "ยาวที่สุด" (เจาะจงสุด)
+//   เพื่อให้ผลคงที่ ไม่ขึ้นกับลำดับ key เช่น "หัวหน้า" vs "หน้าร้าน" ที่อาจชนกัน
+function detectPositionSynonym(text: string): string | null {
+  const normalized = text.toLowerCase().trim()
+  let best: { canonical: string; len: number } | null = null
+
+  for (const [canonical, synonyms] of Object.entries(positionSynonyms)) {
+    if (normalized === canonical) return canonical
+    for (const syn of synonyms) {
+      const s = syn.toLowerCase().trim()
+      if (normalized === s) return canonical
+      if (normalized.includes(s) && (!best || s.length > best.len)) {
+        best = { canonical, len: s.length }
+      }
+    }
+  }
+  return best?.canonical ?? null
+}
+
+// จัดรูปแบบรายชื่อสาขาให้อ่านง่าย — bullet, จำกัดจำนวนบรรทัด, ปิดท้ายชวนดู Rich Menu
+function formatBranchList(branches: string[], limit = 8): string {
+  const unique = Array.from(new Set(branches))
+  const bullets = unique.slice(0, limit).map((b) => `• ${b}`).join('\n')
+  return `${bullets}\n...หรือตรวจสอบสาขาที่เปิดรับเพิ่มเติมได้จาก Rich Menu ด้านล่างได้เลยค่ะ 😊`
+}
+
+function detectChangeIntent(text: string): 'all' | 'brand' | 'position' | 'branch' | null {
+  if (/เปลี่ยนใจ|เริ่มใหม่|ขอเริ่มใหม่|ยกเลิก/.test(text)) return 'all'
+  if (/เปลี่ยนแบรนด์|เปลี่ยนบริษัท/.test(text)) return 'brand'
+  if (/เปลี่ยนตำแหน่ง|เปลี่ยนงาน|อยากเปลี่ยนตำแหน่ง|ขอเปลี่ยนตำแหน่ง/.test(text)) return 'position'
+  if (/เปลี่ยนสาขา|อยากเปลี่ยนสาขา|ขอเปลี่ยนสาขา/.test(text)) return 'branch'
+  return null
+}
+
+function looksLikeBrowseIntent(text: string): boolean {
+  return /มีอะไรว่าง|ว่างไหม|รับสมัครอะไร|มีตำแหน่งไหน|มีงานไหม|งานอะไรว่าง|เปิดรับอะไร|มีอะไรบ้าง|ตำแหน่งอะไรบ้าง|เปิดรับสมัครอะไร|ตำแหน่งที่ว่าง|ตำแหน่งเปิดรับ|รับตำแหน่งอะไร/.test(text)
+}
+
+// ผู้สมัครพิมพ์เพื่อขอออกจากโหมด handover กลับมาใช้บอท
+function looksLikeResumeBot(text: string): boolean {
+  return /คุยกับบอท|กลับมาคุยกับบอท|กลับไปใช้บอท|ใช้บอทต่อ|คุยกับร็อคกี้|กลับไปคุยกับบอท/.test(text)
+}
+
+function looksLikeSmallTalk(text: string): boolean {
+  const t = text.trim()
+  return /^(สวัสดี|หวัดดี|ดีจ้า|ดีครับ|ดีค่ะ|ดีนะ|hi\b|hello\b|hey\b|ฮัลโหล|ว่าไง|เป็นยังไงบ้าง|โอเค|โอเคค่ะ|โอเคครับ|oke|ok\b|ขอบคุณ|ขอบใจ|เยี่ยม|เจ๋ง|ดีมาก|555+|ฮ่าฮ่า|ขำ|ฮาฮา|ได้ครับ|ได้ค่ะ|ได้เลย|รับทราบ|ทราบแล้ว|เข้าใจแล้ว|โอเคเลย)/i.test(t)
 }
 
 function looksLikeQuestion(text: string): boolean {

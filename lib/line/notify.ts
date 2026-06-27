@@ -35,6 +35,33 @@ export async function notifyHrGroup(
   }
 }
 
+export async function notifyHrHandover(
+  displayName: string,
+  context?: { brand?: string; position?: string; branch?: string }
+): Promise<void> {
+  const groupId = process.env.HR_LINE_GROUP_ID
+  if (!groupId) {
+    console.warn('[line-notify] HR_LINE_GROUP_ID is not set, skipping notify')
+    return
+  }
+
+  const brandLine = context?.brand ? `\n🏢 แบรนด์: ${context.brand}` : ''
+  const posLine = context?.position ? `\n💼 ตำแหน่ง: ${context.position}` : ''
+  const branchLine = context?.branch ? `\n📍 สาขา: ${context.branch}` : ''
+  const message = `🤝 ผู้สมัครต้องการติดต่อเจ้าหน้าที่โดยตรงค่ะ\nชื่อ: ${displayName}${brandLine}${posLine}${branchLine}\n\nรบกวนทีม HR เข้าไปดูแลด้วยนะคะ 😊`
+
+  try {
+    const client = getClient()
+    await client.pushMessage({
+      to: groupId,
+      messages: [{ type: 'text', text: message }],
+    })
+    console.log('[line-notify] Notified HR group — handover:', displayName)
+  } catch (err) {
+    console.error('[line-notify] Failed to notify HR group (handover):', err)
+  }
+}
+
 export async function notifyHrApplicant(
   displayName: string,
   brand: string | undefined,

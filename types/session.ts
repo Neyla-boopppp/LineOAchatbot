@@ -2,6 +2,7 @@ export type ApplicationInfo = {
   brand?: string
   position?: string
   branch?: string
+  history?: string[]  // last 4 user messages for context
 }
 
 export type UserState =
@@ -9,3 +10,4 @@ export type UserState =
   | ({ phase: 'awaiting_screening' } & ApplicationInfo)
   | ({ phase: 'awaiting_documents' } & ApplicationInfo)
   | ({ phase: 'ready' } & ApplicationInfo)
+  | ({ phase: 'handover' } & ApplicationInfo)

@@ -9,14 +9,10 @@ type Cache = {
 
 let cache: Cache | null = null
 
+const CACHE_TTL_MS = 15 * 60 * 1000 // 15 นาที — อัปเดต Sheet แล้วบอทเห็นภายใน 15 นาที
+
 function nextRefreshAt(): number {
-  const now = new Date()
-  const next = new Date()
-  next.setUTCHours(3, 0, 0, 0)
-  if (now.getUTCHours() >= 3) {
-    next.setUTCDate(next.getUTCDate() + 1)
-  }
-  return next.getTime()
+  return Date.now() + CACHE_TTL_MS
 }
 
 function parseCSV(text: string): string[][] {
@@ -83,6 +79,14 @@ function mapToJobListing(headers: string[], cells: string[]): JobListing {
   }
 }
 
+const VALID_STATUSES = ['เปิดรับสมัคร', 'ปิดรับสมัคร', 'open', 'closed', 'เปิด', 'ปิด']
+
+function isValidJobRow(j: JobListing): boolean {
+  if (!j.id) return false
+  const s = j.status.trim().toLowerCase()
+  return VALID_STATUSES.some((v) => s.includes(v.toLowerCase()))
+}
+
 export async function fetchJobs(): Promise<JobListing[]> {
   if (cache && Date.now() < cache.expiredAt) {
     return cache.rows
@@ -111,10 +115,10 @@ export async function fetchJobs(): Promise<JobListing[]> {
       .slice(headerIdx + 1)
       .filter((r) => r.some((c) => c.trim()))
       .map((r) => mapToJobListing(headers, r))
-      .filter((j) => j.id)
+      .filter(isValidJobRow)
 
     cache = { rows, expiredAt: nextRefreshAt() }
-    console.log(`[sheet] Loaded ${rows.length} jobs, next refresh at ${new Date(cache.expiredAt).toISOString()}`)
+    console.log(`[sheet] Loaded ${rows.length} jobs from Job_Vacancies, next refresh at ${new Date(cache.expiredAt).toISOString()}`)
     return rows
   } catch (err) {
     console.error('[sheet] Fetch failed:', err)
