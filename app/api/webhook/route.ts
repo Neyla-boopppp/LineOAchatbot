@@ -454,23 +454,27 @@ async function buildJobsListReply(): Promise<string> {
     return 'ขณะนี้ยังไม่มีตำแหน่งที่เปิดรับสมัครค่ะ 😔 หากมีข่าวสารจะรีบแจ้งนะคะ'
   }
 
-  // brand → position → branches[] (ยุบสาขาของตำแหน่งเดียวกันมาบรรทัดเดียว, คงลำดับที่พบ)
+  // brand → branch → positions[] (จัดกลุ่มตามแบรนด์ก่อน แล้วย่อยตามสาขา, คงลำดับที่พบ)
   const brandOrder: string[] = []
-  const byBrand: Record<string, Record<string, string[]>> = {}
+  const byBrand: Record<string, { branchOrder: string[]; byBranch: Record<string, string[]> }> = {}
   for (const job of openJobs) {
-    if (!byBrand[job.brand]) { byBrand[job.brand] = {}; brandOrder.push(job.brand) }
-    const posMap = byBrand[job.brand]
-    if (!posMap[job.jobTitle]) posMap[job.jobTitle] = []
-    if (!posMap[job.jobTitle].includes(job.branch)) posMap[job.jobTitle].push(job.branch)
+    if (!byBrand[job.brand]) { byBrand[job.brand] = { branchOrder: [], byBranch: {} }; brandOrder.push(job.brand) }
+    const brandData = byBrand[job.brand]
+    if (!brandData.byBranch[job.branch]) { brandData.byBranch[job.branch] = []; brandData.branchOrder.push(job.branch) }
+    if (!brandData.byBranch[job.branch].includes(job.jobTitle)) brandData.byBranch[job.branch].push(job.jobTitle)
   }
 
-  // แต่ละแบรนด์เป็น 1 block — เว้น 1 บรรทัดว่างคั่นระหว่าง block ให้อ่านง่ายใน LINE
+  // แต่ละแบรนด์เป็น 1 block — ภายในแยกตามสาขา แล้วไล่ตำแหน่งเป็น bullet
+  // เว้น 1 บรรทัดว่างคั่นระหว่าง block ให้อ่านง่ายใน LINE
   const brandBlocks = brandOrder.map((brand) => {
-    const posMap = byBrand[brand]
-    const bullets = Object.keys(posMap)
-      .map((position) => `• ตำแหน่ง ${position} - สาขา ${posMap[position].join(', ')}`)
-      .join('\n')
-    return `🏢 แบรนด์ ${brand}:\n${bullets}`
+    const { branchOrder, byBranch } = byBrand[brand]
+    const branchBlocks = branchOrder
+      .map((branch) => {
+        const bullets = byBranch[branch].map((position) => `• ตำแหน่ง ${position}`).join('\n')
+        return `📍 สาขา ${branch}\n${bullets}`
+      })
+      .join('\n\n')
+    return `🏢 แบรนด์ ${brand}:\n${branchBlocks}`
   })
 
   const header = 'อัปเดตตำแหน่งงานว่างของ Rocks Group ประจำวันนี้ค่ะ 🚀'
