@@ -1,11 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { generateContent } = vi.hoisted(() => ({
+const { constructorOptions, generateContent } = vi.hoisted(() => ({
+  constructorOptions: [] as unknown[],
   generateContent: vi.fn(),
 }))
 
 vi.mock('@google/genai', () => ({
   GoogleGenAI: class {
+    constructor(options: unknown) {
+      constructorOptions.push(options)
+    }
+
     models = { generateContent }
   },
 }))
@@ -18,6 +23,39 @@ import {
   generateReply,
   resolveBranchName,
 } from '../lib/ai/chatbot-ai'
+
+describe('Gemini Developer API configuration', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    generateContent.mockReset()
+    constructorOptions.length = 0
+    delete process.env.GEMINI_API_KEY
+    delete process.env.GOOGLE_API_KEY
+    delete process.env.GOOGLE_GENAI_USE_VERTEXAI
+  })
+
+  it('uses a trimmed Gemini Developer API key and disables Vertex AI explicitly', async () => {
+    process.env.GEMINI_API_KEY = '  developer-api-key  '
+    generateContent.mockResolvedValue({ text: 'grounded reply' })
+
+    const { generateReply } = await import('../lib/ai/chatbot-ai')
+
+    await expect(generateReply('| jobs |', 'question')).resolves.toBe('grounded reply')
+    expect(constructorOptions).toEqual([{ apiKey: 'developer-api-key', vertexai: false }])
+  })
+
+  it.each(['missing', 'blank'])('does not use ambient credentials when GEMINI_API_KEY is %s', async (state) => {
+    if (state === 'blank') process.env.GEMINI_API_KEY = '   '
+    process.env.GOOGLE_API_KEY = 'ambient-google-api-key'
+    process.env.GOOGLE_GENAI_USE_VERTEXAI = 'true'
+
+    const { DEFAULT_REPLY, generateReply } = await import('../lib/ai/chatbot-ai')
+
+    await expect(generateReply('| jobs |', 'question')).resolves.toBe(DEFAULT_REPLY)
+    expect(constructorOptions).toEqual([])
+    expect(generateContent).not.toHaveBeenCalled()
+  })
+})
 
 describe('Gemini chatbot adapter', () => {
   beforeEach(() => {

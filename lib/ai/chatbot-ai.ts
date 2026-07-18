@@ -8,7 +8,11 @@ let client: GoogleGenAI | null = null
 
 function getClient(): GoogleGenAI {
   if (!client) {
-    client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
+    const apiKey = process.env.GEMINI_API_KEY?.trim()
+    if (!apiKey) {
+      throw new Error('GEMINI_API_KEY must be set to use the Gemini Developer API')
+    }
+    client = new GoogleGenAI({ apiKey, vertexai: false })
   }
   return client
 }
