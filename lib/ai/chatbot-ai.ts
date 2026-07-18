@@ -284,7 +284,7 @@ ${knownBranches.map((b, i) => `${i + 1}. ${b}`).join('\n')}
     const byNorm = knownBranches.find((b) => norm(b) === norm(result))
     if (byNorm) return byNorm
 
-    // 3. match กับส่วน English ในวงเล็บ ("ไอคอนสยาม (ICONSIAM)" vs Groq คืน "ICONSIAM")
+    // 3. match กับส่วน English ในวงเล็บ ("ไอคอนสยาม (ICONSIAM)" vs โมเดลคืน "ICONSIAM")
     const byEnglish = knownBranches.find((b) => norm(englishPart(b)) === norm(result))
     if (byEnglish) return byEnglish
 
