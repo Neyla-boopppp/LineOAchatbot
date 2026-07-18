@@ -54,4 +54,4 @@ Result: passed — 1 test file passed; 15/15 tests passed.
 
 ## Commit
 
-Commit SHA: `f66837a7c96fca991e1650454d433b8d51942253` (superseded by the amended commit that includes this report).
+Core implementation commit SHA: `f66837a7c96fca991e1650454d433b8d51942253`. This report was added in a separate follow-up documentation commit.
