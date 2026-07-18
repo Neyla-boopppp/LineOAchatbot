@@ -1,15 +1,24 @@
-import Groq from 'groq-sdk'
+import { GoogleGenAI } from '@google/genai'
 
 const DEFAULT_REPLY = 'คำถามนี้ขอส่งต่อให้ HR ดูแลค่ะ กรุณารอสักครู่นะคะ 😊'
 const NOT_IN_DATA = '__NOT_IN_DATA__'
+const MODEL = 'gemini-2.5-flash'
 
-let client: Groq | null = null
+let client: GoogleGenAI | null = null
 
-function getClient(): Groq {
+function getClient(): GoogleGenAI {
   if (!client) {
-    client = new Groq({ apiKey: process.env.GROQ_API_KEY })
+    const apiKey = process.env.GEMINI_API_KEY?.trim()
+    if (!apiKey) {
+      throw new Error('GEMINI_API_KEY must be set to use the Gemini Developer API')
+    }
+    client = new GoogleGenAI({ apiKey, vertexai: false })
   }
   return client
+}
+
+function responseText(response: { text?: string }): string {
+  return response.text?.trim() ?? ''
 }
 
 const SYSTEM_PROMPT_TEMPLATE = `<role>
@@ -91,33 +100,30 @@ export async function generateReply(
   jobsText: string,
   question: string
 ): Promise<string | null> {
-  const groq = getClient()
   const systemPrompt = `${SYSTEM_PROMPT_TEMPLATE}\n<jobs>\n${jobsText}\n</jobs>`
 
   try {
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      max_tokens: 1024,
-      temperature: 0.1,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: `<question>${question}</question>` },
-      ],
+    const response = await getClient().models.generateContent({
+      model: MODEL,
+      contents: `<question>${question}</question>`,
+      config: {
+        systemInstruction: systemPrompt,
+        maxOutputTokens: 1024,
+        temperature: 0.1,
+        thinkingConfig: { thinkingBudget: 0 },
+      },
     })
 
-    const choice = completion.choices[0]
-    const finishReason = choice?.finish_reason
-    const reply = choice?.message?.content?.trim() ?? ''
+    const finishReason = response.candidates?.[0]?.finishReason
+    const reply = responseText(response)
 
-    console.log('[groq:pass1]', {
-      question,
+    console.log('[chatbot-ai:reply]', {
       finish_reason: finishReason,
-      prompt_tokens: completion.usage?.prompt_tokens,
-      completion_tokens: completion.usage?.completion_tokens,
+      prompt_tokens: response.usageMetadata?.promptTokenCount,
+      completion_tokens: response.usageMetadata?.candidatesTokenCount,
     })
 
-    if (finishReason === 'length') {
-      console.warn('[groq:pass1] MAX_TOKENS reached → using default reply')
+    if (finishReason === 'MAX_TOKENS') {
       return DEFAULT_REPLY
     }
 
@@ -127,7 +133,7 @@ export async function generateReply(
 
     return reply || null
   } catch (err) {
-    console.error('[groq:pass1] Error:', err)
+    console.error('[chatbot-ai:reply] Error:', err)
     return DEFAULT_REPLY
   }
 }
@@ -137,7 +143,6 @@ export async function doubleCheck(
   question: string,
   answer: string
 ): Promise<boolean> {
-  const groq = getClient()
 
   const prompt = `สแกนทุกแถวในตาราง <jobs> ก่อน แล้วตรวจสอบว่า <answer> ผ่านเกณฑ์ทุกข้อหรือไม่:
 1. ใช้ข้อมูลจาก <jobs> เท่านั้น ไม่มีข้อมูลแต่งเติม
@@ -154,23 +159,24 @@ ${jobsText}
 ตอบด้วย OK หรือ NOT_OK เท่านั้น`
 
   try {
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      max_tokens: 10,
-      temperature: 0,
-      messages: [
-        { role: 'system', content: 'คุณคือผู้ตรวจสอบความถูกต้องของคำตอบ ตอบด้วย OK หรือ NOT_OK เท่านั้น' },
-        { role: 'user', content: prompt },
-      ],
+    const response = await getClient().models.generateContent({
+      model: MODEL,
+      contents: prompt,
+      config: {
+        systemInstruction: 'คุณคือผู้ตรวจสอบความถูกต้องของคำตอบ ตอบด้วย OK หรือ NOT_OK เท่านั้น',
+        maxOutputTokens: 10,
+        temperature: 0,
+        thinkingConfig: { thinkingBudget: 0 },
+      },
     })
 
-    const result = completion.choices[0]?.message?.content?.trim() ?? ''
-    const passed = result.toUpperCase().includes('OK') && !result.toUpperCase().includes('NOT_OK')
+    const result = responseText(response).toUpperCase()
+    const passed = result === 'OK'
 
-    console.log('[groq:pass2]', { result, passed })
+    console.log('[chatbot-ai:verify]', { result, passed })
     return passed
   } catch (err) {
-    console.error('[groq:pass2] Error:', err)
+    console.error('[chatbot-ai:verify] Error:', err)
     return false
   }
 }
@@ -187,7 +193,6 @@ export type KnownJobValues = {
 }
 
 export async function extractApplicationInfo(text: string, known?: KnownJobValues, history?: string[]): Promise<ExtractedInfo> {
-  const groq = getClient()
 
   const knownHint =
     known && (known.branches?.length || known.positions?.length)
@@ -201,15 +206,11 @@ ${known.positions?.length ? `ตำแหน่ง: ${known.positions.join(', ')
     : ''
 
   try {
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      max_tokens: 150,
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: `แบรนด์ที่มีในระบบ: Potato Corner, Khao So-i, Uno Coffee
+    const response = await getClient().models.generateContent({
+      model: MODEL,
+      contents: text,
+      config: {
+        systemInstruction: `แบรนด์ที่มีในระบบ: Potato Corner, Khao So-i, Uno Coffee
 ดึงข้อมูลจากข้อความผู้สมัครงาน ตอบ JSON เท่านั้น:
 {"brand": "ชื่อแบรนด์หรือ null", "position": "ตำแหน่งงานหรือ null", "branch": "ชื่อสาขาเท่านั้นหรือ null"}
 กฎสำคัญ:
@@ -217,24 +218,34 @@ ${known.positions?.length ? `ตำแหน่ง: ${known.positions.join(', ')
 - position: ถ้ามีรายการตำแหน่งให้ไว้ด้านล่าง ให้คืนชื่อจากรายการนั้นเท่านั้น ห้ามแต่งเพิ่มหรือแปล
 - ถ้าไม่มีข้อมูลในข้อความปัจจุบัน ให้ดูจากบริบทก่อนหน้า (ถ้ามี)
 - ถ้าไม่มีข้อมูลให้ใส่ null${knownHint}${historyHint}`,
+        maxOutputTokens: 150,
+        temperature: 0,
+        thinkingConfig: { thinkingBudget: 0 },
+        responseMimeType: 'application/json',
+        responseJsonSchema: {
+          type: 'object',
+          properties: {
+            brand: { type: ['string', 'null'] },
+            position: { type: ['string', 'null'] },
+            branch: { type: ['string', 'null'] },
+          },
+          required: ['brand', 'position', 'branch'],
+          additionalProperties: false,
         },
-        { role: 'user', content: text },
-      ],
+      },
     })
-
-    const raw = completion.choices[0]?.message?.content?.trim() ?? '{}'
-    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const parsed = JSON.parse(responseText(response) || '{}') as Record<string, unknown>
     const clean = (v: unknown): string | null =>
       v && typeof v === 'string' && v.toLowerCase() !== 'null' ? v.trim() : null
 
-    console.log('[groq:extract]', { text, parsed })
+    console.log('[chatbot-ai:extract]', { hasBrand: !!clean(parsed.brand), hasPosition: !!clean(parsed.position), hasBranch: !!clean(parsed.branch) })
     return {
       brand: clean(parsed.brand),
       position: clean(parsed.position),
       branch: clean(parsed.branch),
     }
   } catch (err) {
-    console.error('[groq:extract] Error:', err)
+    console.error('[chatbot-ai:extract] Error:', err)
     return { brand: null, position: null, branch: null }
   }
 }
@@ -245,27 +256,24 @@ export async function resolveBranchName(
   knownBranches: string[]
 ): Promise<string | null> {
   if (!knownBranches.length) return null
-  const groq = getClient()
   try {
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      max_tokens: 60,
-      temperature: 0,
-      messages: [
-        {
-          role: 'system',
-          content: `รายชื่อสาขาในระบบ (คัดลอกชื่อจากรายการนี้เท่านั้น ห้ามแต่งเพิ่ม):
+    const response = await getClient().models.generateContent({
+      model: MODEL,
+      contents: userInput,
+      config: {
+        systemInstruction: `รายชื่อสาขาในระบบ (คัดลอกชื่อจากรายการนี้เท่านั้น ห้ามแต่งเพิ่ม):
 ${knownBranches.map((b, i) => `${i + 1}. ${b}`).join('\n')}
 
 ผู้ใช้พิมพ์ชื่อสาขา ให้เลือกสาขาจากรายการข้างบนที่ตรงกับที่ผู้ใช้หมายถึงที่สุด (แม้จะสะกดต่างกันหรือเป็นคนละภาษา)
 ถ้าไม่มีสาขาที่ตรงในรายการ → ตอบ NOT_FOUND เท่านั้น
 ตอบด้วยชื่อสาขาจากรายการ คัดลอกมาทั้งคำรวมวงเล็บ`,
-        },
-        { role: 'user', content: userInput },
-      ],
+        maxOutputTokens: 60,
+        temperature: 0,
+        thinkingConfig: { thinkingBudget: 0 },
+      },
     })
-    const result = completion.choices[0]?.message?.content?.trim() ?? ''
-    console.log('[groq:resolveBranch]', { userInput, result })
+    const result = responseText(response)
+    console.log('[chatbot-ai:resolve-branch]', { matched: !!result && !result.toUpperCase().includes('NOT_FOUND') })
     if (!result || result.toUpperCase().includes('NOT_FOUND')) return null
 
     const norm = (s: string) => s.toLowerCase().replace(/[-\s()]+/g, '')
@@ -280,7 +288,7 @@ ${knownBranches.map((b, i) => `${i + 1}. ${b}`).join('\n')}
     const byNorm = knownBranches.find((b) => norm(b) === norm(result))
     if (byNorm) return byNorm
 
-    // 3. match กับส่วน English ในวงเล็บ ("ไอคอนสยาม (ICONSIAM)" vs Groq คืน "ICONSIAM")
+    // 3. match กับส่วน English ในวงเล็บ ("ไอคอนสยาม (ICONSIAM)" vs โมเดลคืน "ICONSIAM")
     const byEnglish = knownBranches.find((b) => norm(englishPart(b)) === norm(result))
     if (byEnglish) return byEnglish
 
@@ -291,7 +299,7 @@ ${knownBranches.map((b, i) => `${i + 1}. ${b}`).join('\n')}
     )
     return byPartial ?? null
   } catch (err) {
-    console.error('[groq:resolveBranch] Error:', err)
+    console.error('[chatbot-ai:resolve-branch] Error:', err)
     return null
   }
 }
@@ -302,33 +310,41 @@ export type ScreeningResult = {
 }
 
 export async function extractScreeningInfo(text: string): Promise<ScreeningResult> {
-  const groq = getClient()
   try {
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      max_tokens: 80,
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: `ดึงข้อมูลจากข้อความ ตอบ JSON เท่านั้น:
+    const response = await getClient().models.generateContent({
+      model: MODEL,
+      contents: text,
+      config: {
+        systemInstruction: `ดึงข้อมูลจากข้อความ ตอบ JSON เท่านั้น:
 {"isThai": true/false/null, "age": number/null}
 - isThai: true ถ้าสัญชาติไทย, false ถ้าไม่ใช่ไทย, null ถ้าไม่ระบุ
 - age: อายุเป็นตัวเลข, null ถ้าไม่ระบุ`,
+        maxOutputTokens: 80,
+        temperature: 0,
+        thinkingConfig: { thinkingBudget: 0 },
+        responseMimeType: 'application/json',
+        responseJsonSchema: {
+          type: 'object',
+          properties: {
+            isThai: { type: ['boolean', 'null'] },
+            age: { type: ['number', 'null'] },
+          },
+          required: ['isThai', 'age'],
+          additionalProperties: false,
         },
-        { role: 'user', content: text },
-      ],
+      },
     })
-    const raw = completion.choices[0]?.message?.content?.trim() ?? '{}'
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    console.log('[groq:screening]', { text, parsed })
+    const parsed = JSON.parse(responseText(response) || '{}') as Record<string, unknown>
+    console.log('[chatbot-ai:screening]', {
+      hasNationality: typeof parsed.isThai === 'boolean',
+      hasAge: typeof parsed.age === 'number',
+    })
     return {
       isThai: typeof parsed.isThai === 'boolean' ? parsed.isThai : null,
       age: typeof parsed.age === 'number' ? parsed.age : null,
     }
   } catch (err) {
-    console.error('[groq:screening] Error:', err)
+    console.error('[chatbot-ai:screening] Error:', err)
     return { isThai: null, age: null }
   }
 }

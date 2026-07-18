@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { messagingApi, webhook, validateSignature } from '@line/bot-sdk'
 import { fetchJobs } from '@/lib/data/sheet'
 import { filterJobs, formatJobsForAI, isOpen } from '@/lib/data/job-search'
-import { generateReply, doubleCheck, DEFAULT_REPLY, extractApplicationInfo, extractScreeningInfo, resolveBranchName, type KnownJobValues } from '@/lib/ai/groq'
+import { generateReply, doubleCheck, DEFAULT_REPLY, extractApplicationInfo, extractScreeningInfo, resolveBranchName, type KnownJobValues } from '@/lib/ai/chatbot-ai'
 import { notifyHrGroup, notifyHrApplicant, notifyHrHandover } from '@/lib/line/notify'
 import { getState, setState, WELCOME_MESSAGE, NON_THAI_DOCS, buildSummaryMessage, buildMissingMessage, type UserState } from '@/lib/session/screening'
 

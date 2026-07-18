@@ -29,7 +29,7 @@ LINE Official Account chatbot สำหรับงาน **HR / รับสม
 | Framework | Next.js 14 (App Router) + TypeScript |
 | Hosting | Vercel (Serverless Functions) |
 | LINE | `@line/bot-sdk` v11 (Messaging API) |
-| AI (บอท) | Groq SDK — `llama-3.3-70b-versatile` |
+| AI (บอท) | Google Gemini API — `gemini-2.5-flash` |
 | AI (Jeeb Team) | Anthropic Claude — `@anthropic-ai/sdk` |
 | ฐานข้อมูลงาน | Google Sheet (publish เป็น CSV) |
 | Session store | Vercel KV (fallback in-memory) |
@@ -46,7 +46,7 @@ app/
     admin/jobs/route.ts   ← debug endpoint ดู/รีเฟรช Sheet (⚠️ ยังไม่มี auth)
   layout.tsx, page.tsx
 lib/
-  ai/groq.ts              ← Groq: generateReply, doubleCheck, extract*, resolveBranchName
+  ai/chatbot-ai.ts        ← Gemini: generateReply, doubleCheck, extract*, resolveBranchName
   ai/claude-agent.ts      ← wrapper เรียก Claude (Jeeb Team)
   data/sheet.ts           ← ดึง + parse CSV + cache 15 นาที
   data/job-search.ts      ← filter/score/format ตำแหน่งงาน
@@ -134,7 +134,7 @@ Routes: `marketing`, `flow_design`, `code`, `flex_message`, `qa`, `debug`, `comp
 | Variable | ใช้ทำอะไร |
 |---|---|
 | `LINE_CHANNEL_ACCESS_TOKEN` / `LINE_CHANNEL_SECRET` | LINE Messaging API |
-| `GROQ_API_KEY` | AI ตัวบอท (Groq) |
+| `GEMINI_API_KEY` | AI ตัวบอท (Google Gemini) |
 | `ANTHROPIC_API_KEY` | Jeeb Team (Claude) |
 | `SHEET_CSV_URL` | ฐานข้อมูลตำแหน่งงาน (CSV) |
 | `HR_LINE_GROUP_ID` | กลุ่ม LINE ทีม HR (รับแจ้งเตือน) |
@@ -158,4 +158,4 @@ npm run lint    # ESLint
 - [ ] `/api/admin/jobs` ยังไม่มี authentication — ควรเพิ่มก่อน production
 - [ ] ถ้าไม่ตั้ง Vercel KV → session เก็บ in-memory จะหายทุก cold start (serverless)
 - [ ] Cache Sheet 15 นาที — การอัปเดตงานด่วนจะดีเลย์สูงสุด 15 นาที
-- [ ] Groq เป็น free tier — ระวัง rate limit ช่วง traffic สูง
+- [ ] Gemini API — ตรวจสอบ quota, rate limit และ billing ของ Google AI Studio ให้เหมาะกับ traffic
