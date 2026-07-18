@@ -29,7 +29,7 @@ LINE Official Account chatbot สำหรับงาน **HR / รับสม
 | Framework | Next.js 14 (App Router) + TypeScript |
 | Hosting | Vercel (Serverless Functions) |
 | LINE | `@line/bot-sdk` v11 (Messaging API) |
-| AI (บอท) | Google Gemini API — `gemini-2.5-flash` |
+| AI (บอท) | Google Gemini API — `gemini-3.5-flash` |
 | AI (Jeeb Team) | Anthropic Claude — `@anthropic-ai/sdk` |
 | ฐานข้อมูลงาน | Google Sheet (publish เป็น CSV) |
 | Session store | Vercel KV (fallback in-memory) |

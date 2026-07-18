@@ -2,7 +2,7 @@ import { GoogleGenAI } from '@google/genai'
 
 const DEFAULT_REPLY = 'คำถามนี้ขอส่งต่อให้ HR ดูแลค่ะ กรุณารอสักครู่นะคะ 😊'
 const NOT_IN_DATA = '__NOT_IN_DATA__'
-const MODEL = 'gemini-2.5-flash'
+const MODEL = 'gemini-3.5-flash'
 
 let client: GoogleGenAI | null = null
 
