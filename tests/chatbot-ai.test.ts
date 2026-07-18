@@ -74,7 +74,7 @@ describe('Gemini chatbot adapter', () => {
       'เธ•เธญเธเธเธตเนเน€เธเธดเธ”เธฃเธฑเธเธชเธกเธฑเธเธฃเธญเธขเธนเนเธเนเธฐ',
     )
     expect(generateContent).toHaveBeenCalledWith(expect.objectContaining({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       contents: '<question>เน€เธเธดเธ”เธฃเธฑเธเนเธซเธก</question>',
       config: expect.objectContaining({ temperature: 0.1, maxOutputTokens: 1024 }),
     }))
