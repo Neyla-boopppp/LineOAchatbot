@@ -159,3 +159,5 @@ npm run lint    # ESLint
 - [ ] ถ้าไม่ตั้ง Vercel KV → session เก็บ in-memory จะหายทุก cold start (serverless)
 - [ ] Cache Sheet 15 นาที — การอัปเดตงานด่วนจะดีเลย์สูงสุด 15 นาที
 - [ ] Gemini API — ตรวจสอบ quota, rate limit และ billing ของ Google AI Studio ให้เหมาะกับ traffic
+- [ ] **PDPA / ความเป็นส่วนตัว:** Gemini **free tier** — Google นำข้อความที่ส่งเข้ามาไปปรับปรุงบริการ (อาจมีคนตรวจ) → ข้อมูลผู้สมัคร (สัญชาติ/อายุ/ข้อความ) มีความเสี่ยง ทางลด: (1) มีข้อความแจ้งผู้สมัครใน `WELCOME_MESSAGE` แล้ว (2) adapter ไม่ log ข้อความดิบ (log แค่ flag) (3) เอกสาร/รูปภาพส่งเข้ากลุ่ม HR เท่านั้น **ไม่ผ่าน LLM** ([lib/line/notify.ts](lib/line/notify.ts)) — หากต้องการ PDPA เข้มงวด ควรอัปเกรดเป็น **Gemini paid** (ไม่เทรนข้อมูล) หรือกลับไปใช้ **Groq** (ไม่เทรน + zero-retention)
+- [ ] Free-tier RPD/TPM มีจำกัด (~700 ผู้สมัคร/เดือน ≈ 450–500 calls/วัน) — ถ้าเจอ 429 ให้เปลี่ยนเป็น Flash รุ่นที่ RPD สูงกว่า หรือลด call ต่อข้อความ (ตัด `doubleCheck` / ลดขนาดตาราง jobs ใน prompt)
