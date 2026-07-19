@@ -125,6 +125,16 @@ async function runMenuAction(
   await sendReply(replyToken, HANDOVER_MESSAGE)
 }
 
+// Follow event (กดเพิ่มเพื่อน / ปลดบล็อกแล้วแอดใหม่) — ทักทาย + แนะนำตัวทันที
+// ตั้ง state เริ่มต้นเป็น collecting_info เพื่อไม่ให้ WELCOME_MESSAGE ถูกส่งซ้ำตอนพิมพ์ข้อความแรก
+async function handleFollow(event: webhook.FollowEvent): Promise<void> {
+  const replyToken = event.replyToken
+  if (!replyToken) return
+  const userId = 'source' in event ? (event.source as webhook.UserSource).userId : undefined
+  if (userId) await setState(userId, { phase: 'collecting_info' })
+  await sendReply(replyToken, WELCOME_MESSAGE)
+}
+
 // Postback event (เผื่อ Rich Menu ใช้ postback action ในอนาคต) — map ไป intent เดียวกับ text
 async function handlePostback(event: webhook.PostbackEvent): Promise<void> {
   const replyToken = event.replyToken
@@ -151,6 +161,10 @@ function isUserSource(event: webhook.Event): boolean {
 async function handleEvent(event: webhook.Event): Promise<void> {
   if (!isUserSource(event)) return
 
+  if (event.type === 'follow') {
+    await handleFollow(event as webhook.FollowEvent)
+    return
+  }
   if (event.type === 'postback') {
     await handlePostback(event as webhook.PostbackEvent)
     return
