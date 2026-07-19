@@ -216,11 +216,12 @@ ${known.positions?.length ? `ตำแหน่ง: ${known.positions.join(', ')
 กฎสำคัญ:
 - branch: ตัดคำนำหน้าอย่าง "สาขา" ออก เช่น "สาขาไอคอนสยาม" → "ไอคอนสยาม"
 - position: ถ้ามีรายการตำแหน่งให้ไว้ด้านล่าง ให้คืนชื่อจากรายการนั้นเท่านั้น ห้ามแต่งเพิ่มหรือแปล
-- ถ้าไม่มีข้อมูลในข้อความปัจจุบัน ให้ดูจากบริบทก่อนหน้า (ถ้ามี)
+- ให้ความสำคัญกับ "ข้อความปัจจุบัน" ก่อนเสมอ — ถ้าข้อความปัจจุบันระบุ brand/position/branch ใหม่ ให้ใช้ค่านั้นทันที
+- ใช้ "บริบทก่อนหน้า" เฉพาะเติมช่องที่ข้อความปัจจุบันไม่ได้พูดถึงเลยเท่านั้น ห้ามดึงตำแหน่ง/สาขาเก่ามาใส่ถ้าผู้ใช้กำลังถามเรื่องอื่น
 - ถ้าไม่มีข้อมูลให้ใส่ null${knownHint}${historyHint}`,
-        maxOutputTokens: 150,
+        maxOutputTokens: 1024,
         temperature: 0,
-        thinkingConfig: { thinkingBudget: 0 },
+        thinkingConfig: { thinkingBudget: 512 },
         responseMimeType: 'application/json',
         responseJsonSchema: {
           type: 'object',
@@ -267,9 +268,9 @@ ${knownBranches.map((b, i) => `${i + 1}. ${b}`).join('\n')}
 ผู้ใช้พิมพ์ชื่อสาขา ให้เลือกสาขาจากรายการข้างบนที่ตรงกับที่ผู้ใช้หมายถึงที่สุด (แม้จะสะกดต่างกันหรือเป็นคนละภาษา)
 ถ้าไม่มีสาขาที่ตรงในรายการ → ตอบ NOT_FOUND เท่านั้น
 ตอบด้วยชื่อสาขาจากรายการ คัดลอกมาทั้งคำรวมวงเล็บ`,
-        maxOutputTokens: 60,
+        maxOutputTokens: 512,
         temperature: 0,
-        thinkingConfig: { thinkingBudget: 0 },
+        thinkingConfig: { thinkingBudget: 256 },
       },
     })
     const result = responseText(response)

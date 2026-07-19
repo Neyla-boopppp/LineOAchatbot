@@ -355,28 +355,53 @@ async function handleEvent(event: webhook.Event): Promise<void> {
         )
       })
 
-      // ชื่อตำแหน่งจริงจาก Sheet สำหรับแสดงผล — กัน hallucination ชื่อตำแหน่งที่ผู้ใช้ไม่ได้พิมพ์
-      const displayPosition = byBrandPos.length > 0 ? byBrandPos[0].jobTitle : position!
+      // ── P3: กันการเลือกตำแหน่ง "หัวหน้า" ให้เงียบๆ เมื่อผู้ใช้ขอพนักงานทั่วไป ──
+      // "พนักงานล้างจาน" อาจ match ทั้ง "Steward" และ "Head Steward" — เดิมเลือก [0] เงียบๆ
+      // ถ้าไม่ตรงชื่อเป๊ะ + ผู้ใช้ไม่ได้ขอตำแหน่งระดับหัวหน้า → ตัดตำแหน่งหัวหน้าออกก่อน
+      // ถ้ายังเหลือหลายตำแหน่งระดับเดียวกัน → ถามให้เลือก ไม่เดา
+      const SENIOR_RE = /head|senior|lead|supervisor|หัวหน้า|ผู้จัดการ|ผจก|ซูเปอร์ไวเซอร์|ซุปเปอร์ไวเซอร์/i
+      const distinctTitles = Array.from(new Set(byBrandPos.map((j) => j.jobTitle)))
+      // ผู้ใช้พิมพ์ชื่อตำแหน่งจริงกลับมา (เช่น เลือกจากรายการ disambiguation) → match ตรงตัว
+      // เลือกชื่อที่ยาวสุดก่อน เพื่อให้ "Head Steward" ชนะ "Steward" กันวน loop
+      const textTitleMatch = distinctTitles
+        .filter((t) => normStr(userText).includes(normStr(t)))
+        .sort((a, b) => b.length - a.length)[0]
+      const exactTitle = textTitleMatch ?? distinctTitles.find((t) => normStr(t) === normStr(position!))
+      let candidateTitles = distinctTitles
+      if (!exactTitle && distinctTitles.length > 1 && !SENIOR_RE.test(userText)) {
+        const baseTitles = distinctTitles.filter((t) => !SENIOR_RE.test(t))
+        if (baseTitles.length > 0) candidateTitles = baseTitles
+      }
+      const chosenTitle = exactTitle ?? (candidateTitles.length === 1 ? candidateTitles[0] : null)
 
       if (byBrandPos.length === 0) {
-        // brand หรือ position ไม่มีในระบบเลย
-        if (userId) await setState(userId, { phase: 'collecting_info', history: updatedHistory })
+        // P4: ไม่พบตำแหน่ง — เก็บ brand ไว้ ล้าง position + history กัน context เก่าปนคำถามถัดไป
+        if (userId) await setState(userId, { phase: 'collecting_info', brand })
         replyText = `ขออภัยค่ะ ไม่พบตำแหน่ง "${position!}" สำหรับ ${brand!} ในระบบค่ะ\nลองระบุแบรนด์หรือตำแหน่งใหม่ได้เลยนะคะ 😊`
+      } else if (chosenTitle === null) {
+        // P3: ยังกำกวมหลายตำแหน่งระดับเดียวกัน — ถามให้เลือก (เก็บ brand, ล้าง position/history)
+        if (userId) await setState(userId, { phase: 'collecting_info', brand })
+        const titleList = candidateTitles.map((t) => `• ${t}`).join('\n')
+        replyText = `${brand} มีหลายตำแหน่งที่ใกล้เคียงกับ "${position!}" ค่ะ 😊 สนใจตำแหน่งไหนคะ?\n\n${titleList}\n\nพิมพ์ชื่อตำแหน่งที่ต้องการมาได้เลยนะคะ`
       } else {
+        // ตำแหน่งชัดแล้ว — ใช้ชื่อจริงจาก Sheet (กัน hallucination) และกรองเฉพาะตำแหน่งนั้น
+        const displayPosition = chosenTitle
+        const jobsForTitle = byBrandPos.filter((j) => j.jobTitle === chosenTitle)
+
         // Step 2: resolve branch — LLM map ชื่อที่ผู้ใช้พิมพ์ → ชื่อจริงใน Sheet
-        const knownBranchesForPos = Array.from(new Set(byBrandPos.map((j) => j.branch)))
+        const knownBranchesForPos = Array.from(new Set(jobsForTitle.map((j) => j.branch)))
         const resolvedBranch = await resolveBranchName(branch!, knownBranchesForPos)
 
         if (!resolvedBranch) {
-          // ไม่มีสาขานี้ในระบบ — เก็บ brand+position ไว้ ให้ผู้สมัครระบุสาขาใหม่
-          if (userId) await setState(userId, { phase: 'collecting_info', brand, position })
+          // ไม่มีสาขานี้ในระบบ — เก็บ brand+position (ชื่อจริง) ไว้ ให้ผู้สมัครระบุสาขาใหม่
+          if (userId) await setState(userId, { phase: 'collecting_info', brand, position: displayPosition })
           replyText = [
             buildSummaryMessage(brand!, displayPosition, branch!),
             `ขออภัยค่ะ ไม่มีสาขา "${branch!}" สำหรับตำแหน่ง ${displayPosition} ค่ะ\nสาขาที่เปิดให้บริการ:\n${formatBranchList(knownBranchesForPos)}\n\nระบุสาขาที่สะดวกได้เลยนะคะ 😊`,
           ]
         } else {
           // Step 3: ได้ชื่อสาขาจริงแล้ว — match และตรวจสถานะ
-          const matched = byBrandPos.filter((j) => j.branch === resolvedBranch)
+          const matched = jobsForTitle.filter((j) => j.branch === resolvedBranch)
           const header = buildSummaryMessage(brand!, displayPosition, resolvedBranch)
           const jobIsOpen = matched.some((j) => isOpen(j.status))
           const jobsText = formatJobsForAI(matched)
@@ -395,12 +420,13 @@ async function handleEvent(event: webhook.Event): Promise<void> {
           const firstMsg = `${header}\n\n${statusMsg}`
 
           if (jobIsOpen) {
-            if (userId) await setState(userId, { phase: 'awaiting_screening', brand, position, branch: resolvedBranch, history: updatedHistory })
+            // P4: เก็บ position เป็นชื่อจริงจาก Sheet เพื่อความคงเส้นคงวาในเทิร์นถัดไป
+            if (userId) await setState(userId, { phase: 'awaiting_screening', brand, position: displayPosition, branch: resolvedBranch, history: updatedHistory })
             replyText = [firstMsg, FOLLOW_UP_Q]
           } else {
-            if (userId) await setState(userId, { phase: 'collecting_info', brand, position, history: updatedHistory })
+            if (userId) await setState(userId, { phase: 'collecting_info', brand, position: displayPosition, history: updatedHistory })
             const openBranches = Array.from(new Set(
-              byBrandPos
+              jobsForTitle
                 .filter((j) => isOpen(j.status) && j.branch !== resolvedBranch)
                 .map((j) => j.branch)
             ))
