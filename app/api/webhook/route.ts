@@ -217,9 +217,15 @@ async function handleEvent(event: webhook.Event): Promise<void> {
     return
   }
 
+  // ── Rich Menu: สมัครงานออนไลน์ → เจตนาชัดว่าอยากใช้บอท จึงพาออกจาก handover ได้ (มาก่อน handover check) ──
+  if (menuIntent === 'apply') {
+    await runMenuAction('apply', replyToken, userId, displayName, state)
+    return
+  }
+
   // ── Handover Mode ──
   // - พิมพ์ keyword "คุยกับบอท" → ออกจากโหมด กลับมาใช้ระบบอัตโนมัติ
-  // - นอกนั้น → forward ข้อความเข้ากลุ่ม HR (บอทไม่ตอบเอง)
+  // - นอกนั้น → forward ข้อความเข้ากลุ่ม HR (บอทไม่ตอบเอง) + เตือน "อยู่โหมดเจ้าหน้าที่" ครั้งเดียว กันผู้ใช้งง
   if (state?.phase === 'handover') {
     if (looksLikeResumeBot(userText)) {
       if (userId) await setState(userId, { phase: 'collecting_info' })
@@ -227,12 +233,16 @@ async function handleEvent(event: webhook.Event): Promise<void> {
       return
     }
     await notifyHrGroup(displayName, userText).catch(() => {})
+    if (!state.hintSent) {
+      if (userId) await setState(userId, { phase: 'handover', brand: state.brand, position: state.position, branch: state.branch, hintSent: true })
+      await sendReply(replyToken, 'ตอนนี้กำลังรอเจ้าหน้าที่ HR เข้ามาดูแลอยู่นะคะ 🙏 ข้อความของคุณถูกส่งให้ทีมงานแล้วค่ะ\n(ถ้าต้องการกลับมาคุยกับพี่ร็อคกี้ (บอท) พิมพ์ "คุยกับบอท" ได้เลยนะคะ)')
+    }
     return
   }
 
-  // ── Rich Menu: ติดต่อเจ้าหน้าที่ (handover) / สมัครงานออนไลน์ (เริ่ม flow) — แตะ state จึงมาหลัง handover check ──
-  if (menuIntent === 'contact' || menuIntent === 'apply') {
-    await runMenuAction(menuIntent, replyToken, userId, displayName, state)
+  // ── Rich Menu: ติดต่อเจ้าหน้าที่ → เข้าสู่โหมด handover — แตะ state จึงมาหลัง handover check ──
+  if (menuIntent === 'contact') {
+    await runMenuAction('contact', replyToken, userId, displayName, state)
     return
   }
 
@@ -356,7 +366,9 @@ async function handleEvent(event: webhook.Event): Promise<void> {
         .filter((t) => normStr(userText).includes(normStr(t)))
         .sort((a, b) => b.length - a.length)[0]
       const exactTitle = textTitleMatch ?? distinctTitles.find((t) => normStr(t) === normStr(position!))
-      const userAskedSenior = SENIOR_RE.test(userText)
+      // ผู้ใช้ตั้งใจขอตำแหน่งหัวหน้า — เช็คทั้งข้อความปัจจุบัน และ position ที่ resolve แล้ว (จาก state)
+      // กัน loop: เทิร์นถัดมาที่พิมพ์แค่สาขา (ไม่มีคำว่าหัวหน้า) จะได้ไม่ถูกถามยืนยันซ้ำ
+      const userAskedSenior = SENIOR_RE.test(userText) || SENIOR_RE.test(position ?? '')
       let candidateTitles = distinctTitles
       if (!exactTitle && distinctTitles.length > 1 && !userAskedSenior) {
         const baseTitles = distinctTitles.filter((t) => !SENIOR_RE.test(t))

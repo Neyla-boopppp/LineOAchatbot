@@ -3,6 +3,7 @@ export type ApplicationInfo = {
   position?: string
   branch?: string
   history?: string[]  // last 4 user messages for context
+  hintSent?: boolean  // handover: ส่งข้อความเตือน "อยู่โหมดเจ้าหน้าที่" ไปแล้วหรือยัง (เตือนครั้งเดียว)
 }
 
 export type UserState =
