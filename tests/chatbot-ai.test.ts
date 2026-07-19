@@ -140,6 +140,23 @@ describe('Gemini chatbot adapter', () => {
     await expect(extractScreeningInfo('เนเธ—เธข เธญเธฒเธขเธธ 25')).resolves.toEqual({ isThai: true, age: 25 })
   })
 
+  it('retries on a transient 429 and returns the eventual reply', async () => {
+    const err = Object.assign(new Error('429 RESOURCE_EXHAUSTED'), { status: 429 })
+    generateContent
+      .mockRejectedValueOnce(err)
+      .mockResolvedValueOnce({ text: 'recovered reply', candidates: [{ finishReason: 'STOP' }] })
+
+    await expect(generateReply('| jobs |', 'question')).resolves.toBe('recovered reply')
+    expect(generateContent).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not retry non-retriable errors (e.g. 400)', async () => {
+    generateContent.mockRejectedValue(Object.assign(new Error('400 INVALID_ARGUMENT'), { status: 400 }))
+
+    await expect(generateReply('| jobs |', 'question')).resolves.toBe(DEFAULT_REPLY)
+    expect(generateContent).toHaveBeenCalledTimes(1)
+  })
+
   it('fails closed when verification throws', async () => {
     generateContent.mockRejectedValue(new Error('provider unavailable'))
     await expect(doubleCheck('| jobs |', 'เธเธณเธ–เธฒเธก', 'เธเธณเธ•เธญเธ')).resolves.toBe(false)
