@@ -4,18 +4,12 @@ import { fetchJobs } from '@/lib/data/sheet'
 import { filterJobs, formatJobsForAI, isOpen } from '@/lib/data/job-search'
 import { generateReply, doubleCheck, DEFAULT_REPLY, extractApplicationInfo, extractScreeningInfo, resolveBranchName, type KnownJobValues } from '@/lib/ai/chatbot-ai'
 import { notifyHrGroup, notifyHrApplicant, notifyHrHandover } from '@/lib/line/notify'
-import { getState, setState, WELCOME_MESSAGE, NON_THAI_DOCS, buildSummaryMessage, buildMissingMessage, type UserState } from '@/lib/session/screening'
+import { getState, setState, WELCOME_MESSAGE, NON_THAI_DOCS, APPLY_PROMPT, FAQ_MESSAGE, BENEFIT_ASK, buildSummaryMessage, buildMissingMessage, type UserState } from '@/lib/session/screening'
+import { detectRichMenuIntent, parsePostbackIntent, READ_ONLY_INTENTS, type MenuIntent } from '@/lib/line/menu'
 
 export const maxDuration = 30
 
 const DEFAULT_MESSAGE = 'คำถามนี้ขอส่งต่อให้ HR ดูแลค่ะ กรุณารอสักครู่นะคะ 😊'
-
-// ข้อความที่ปุ่ม Rich Menu (message action) อาจส่งมา — รับหลายรูปคำ (label form + keyword form)
-// match แบบ normalize ทั้งข้อความ จึงปลอดภัยจาก false-positive (ผู้ใช้ต้องพิมพ์ตรงเป๊ะ)
-const RICH_MENU_JOBS_TEXTS = ['ตำแหน่งงานว่าง', 'ตำแหน่งงานว่างด่วน', 'งานว่างด่วน']
-const RICH_MENU_DOCS_TEXTS = ['เอกสารที่จำเป็นต้องใช้ในการสมัคร', 'เอกสารจำเป็น', 'เอกสารที่จำเป็น']
-const RICH_MENU_CONTACT_TEXTS = ['ติดต่อเจ้าหน้าที่', 'คุยกับเจ้าหน้าที่', 'ติดต่อ hr']
-const RICH_MENU_BENEFITS_TEXTS = ['สวัสดิการและผลตอบแทน', 'สวัสดิการและสิทธิประโยชน์', 'สวัสดิการ', 'ผลตอบแทน', 'สวัสดิการ/ผลตอบแทน']
 
 const DOCS_MESSAGE = `ถ้าเป็นคนสัญชาติไทยเตรียมเอกสารตามนี้นะคะ 😊
 1. รูปถ่าย
@@ -82,34 +76,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   return NextResponse.json({ status: 'ok' })
 }
 
-type MenuIntent = 'jobs' | 'docs' | 'contact' | 'benefits'
-
-function normalizeMenu(s: string): string {
-  return s.toLowerCase().replace(/\s+/g, '')
-}
-
-// match ข้อความทั้งก้อนกับชุดคำของปุ่ม (normalize) — คืน intent หรือ null
-// match ทั้งข้อความ จึงปลอดภัยจาก false-positive (ผู้ใช้ต้องพิมพ์ตรงกับปุ่ม)
-function detectRichMenuIntent(text: string): MenuIntent | null {
-  const n = normalizeMenu(text)
-  if (RICH_MENU_JOBS_TEXTS.some((t) => normalizeMenu(t) === n)) return 'jobs'
-  if (RICH_MENU_DOCS_TEXTS.some((t) => normalizeMenu(t) === n)) return 'docs'
-  if (RICH_MENU_BENEFITS_TEXTS.some((t) => normalizeMenu(t) === n)) return 'benefits'
-  if (RICH_MENU_CONTACT_TEXTS.some((t) => normalizeMenu(t) === n)) return 'contact'
-  return null
-}
-
-// แปลง postback data → intent (เผื่ออนาคตเปลี่ยน Rich Menu เป็น postback action เช่น data="menu=jobs")
-function parsePostbackIntent(data: string | undefined): MenuIntent | null {
-  if (!data) return null
-  const d = data.toLowerCase()
-  if (d.includes('job')) return 'jobs'
-  if (d.includes('doc')) return 'docs'
-  if (d.includes('benefit') || d.includes('welfare')) return 'benefits'
-  if (d.includes('contact') || d.includes('hr') || d.includes('staff')) return 'contact'
-  return null
-}
-
 // ดำเนินการตาม Rich Menu intent — ใช้ร่วมกันทั้ง text action และ postback
 async function runMenuAction(
   intent: MenuIntent,
@@ -126,8 +92,31 @@ async function runMenuAction(
     await sendReply(replyToken, await buildJobsListReply())
     return
   }
+  if (intent === 'faq') {
+    await sendReply(replyToken, FAQ_MESSAGE)
+    return
+  }
+  if (intent === 'branches') {
+    await sendReply(replyToken, await buildBranchesReply())
+    return
+  }
   if (intent === 'benefits') {
-    await sendReply(replyToken, await buildBenefitsReply(state))
+    // รู้แบรนด์+ตำแหน่งแล้ว → ตอบสวัสดิการทันที; ยังไม่รู้ → จำบริบทไว้แล้วถามต่อ (#3)
+    // ในโหมด handover ไม่แตะ state (กันหลุดออกจาก handover) — ตอบข้อมูลอย่างเดียว
+    if (state?.brand && state?.position) {
+      await sendReply(replyToken, await buildBenefitsReply(state))
+    } else {
+      if (userId && state?.phase !== 'handover') {
+        await setState(userId, { phase: 'awaiting_benefit_info', brand: state?.brand, position: state?.position, branch: state?.branch, history: state?.history })
+      }
+      await sendReply(replyToken, BENEFIT_ASK)
+    }
+    return
+  }
+  if (intent === 'apply') {
+    // เริ่มขั้นตอนสมัคร — รีเซ็ตเป็น collecting_info (คง history) แล้วชวนระบุข้อมูล
+    if (userId) await setState(userId, { phase: 'collecting_info', history: state?.history })
+    await sendReply(replyToken, APPLY_PROMPT)
     return
   }
   // contact → เข้าสู่โหมด handover + แจ้ง HR
@@ -223,7 +212,7 @@ async function handleEvent(event: webhook.Event): Promise<void> {
   const menuIntent = detectRichMenuIntent(userText)
 
   // ── Rich Menu (อ่านข้อมูล): ทำงานได้เสมอ แม้อยู่ในโหมด handover — return ก่อนแตะ state จึงไม่ออกจาก handover ──
-  if (menuIntent === 'docs' || menuIntent === 'jobs' || menuIntent === 'benefits') {
+  if (menuIntent && READ_ONLY_INTENTS.has(menuIntent)) {
     await runMenuAction(menuIntent, replyToken, userId, displayName, state)
     return
   }
@@ -241,9 +230,9 @@ async function handleEvent(event: webhook.Event): Promise<void> {
     return
   }
 
-  // ── Rich Menu: ติดต่อเจ้าหน้าที่ → เข้าสู่โหมด handover (เฉพาะคนที่ยังไม่อยู่ในโหมด) ──
-  if (menuIntent === 'contact') {
-    await runMenuAction('contact', replyToken, userId, displayName, state)
+  // ── Rich Menu: ติดต่อเจ้าหน้าที่ (handover) / สมัครงานออนไลน์ (เริ่ม flow) — แตะ state จึงมาหลัง handover check ──
+  if (menuIntent === 'contact' || menuIntent === 'apply') {
+    await runMenuAction(menuIntent, replyToken, userId, displayName, state)
     return
   }
 
@@ -367,17 +356,34 @@ async function handleEvent(event: webhook.Event): Promise<void> {
         .filter((t) => normStr(userText).includes(normStr(t)))
         .sort((a, b) => b.length - a.length)[0]
       const exactTitle = textTitleMatch ?? distinctTitles.find((t) => normStr(t) === normStr(position!))
+      const userAskedSenior = SENIOR_RE.test(userText)
       let candidateTitles = distinctTitles
-      if (!exactTitle && distinctTitles.length > 1 && !SENIOR_RE.test(userText)) {
+      if (!exactTitle && distinctTitles.length > 1 && !userAskedSenior) {
         const baseTitles = distinctTitles.filter((t) => !SENIOR_RE.test(t))
         if (baseTitles.length > 0) candidateTitles = baseTitles
       }
-      const chosenTitle = exactTitle ?? (candidateTitles.length === 1 ? candidateTitles[0] : null)
+      // #4: ผู้ใช้ขอตำแหน่งทั่วไป แต่ที่ match มีแต่ระดับหัวหน้าล้วน → ห้าม auto-pick ให้ถามยืนยันก่อน
+      const seniorOnly = !exactTitle && !userAskedSenior && byBrandPos.length > 0 && distinctTitles.every((t) => SENIOR_RE.test(t))
+      const chosenTitle = exactTitle ?? (!seniorOnly && candidateTitles.length === 1 ? candidateTitles[0] : null)
 
       if (byBrandPos.length === 0) {
-        // P4: ไม่พบตำแหน่ง — เก็บ brand ไว้ ล้าง position + history กัน context เก่าปนคำถามถัดไป
+        // #2: ไม่พบตำแหน่ง — แทนที่จะให้ตัน ลิสต์ตำแหน่งที่แบรนด์นั้นเปิดรับจริงให้เลือก
+        //     เก็บ brand ไว้ ล้าง position + history กัน context เก่าปนคำถามถัดไป
         if (userId) await setState(userId, { phase: 'collecting_info', brand })
-        replyText = `ขออภัยค่ะ ไม่พบตำแหน่ง "${position!}" สำหรับ ${brand!} ในระบบค่ะ\nลองระบุแบรนด์หรือตำแหน่งใหม่ได้เลยนะคะ 😊`
+        const openTitles = Array.from(new Set(
+          jobs.filter((j) => normStr(j.brand).includes(normStr(brand!)) && isOpen(j.status)).map((j) => j.jobTitle)
+        ))
+        if (openTitles.length > 0) {
+          const list = openTitles.map((t) => `• ${t}`).join('\n')
+          replyText = `ขออภัยค่ะ ไม่พบตำแหน่ง "${position!}" สำหรับ ${brand!} ค่ะ 😊\nตอนนี้ ${brand!} เปิดรับตำแหน่งเหล่านี้อยู่ค่ะ:\n\n${list}\n\nสนใจตำแหน่งไหน พิมพ์บอกพี่ร็อคกี้ได้เลยนะคะ`
+        } else {
+          replyText = `ขออภัยค่ะ ขณะนี้ ${brand!} ยังไม่มีตำแหน่งที่เปิดรับสมัครค่ะ 😔\nลองดูแบรนด์อื่นจากปุ่ม "ตำแหน่งงานที่เปิดรับ" ในเมนูด้านล่างได้เลยนะคะ`
+        }
+      } else if (seniorOnly) {
+        // #4: มีแต่ตำแหน่งระดับหัวหน้า — ถามยืนยันแทนการเลือกให้เงียบๆ (เก็บ brand, ล้าง position)
+        if (userId) await setState(userId, { phase: 'collecting_info', brand })
+        const titleList = distinctTitles.map((t) => `• ${t}`).join('\n')
+        replyText = `ตำแหน่ง "${position!}" ของ ${brand!} ตอนนี้เปิดรับเฉพาะระดับหัวหน้าค่ะ 😊\n\n${titleList}\n\nสนใจตำแหน่งนี้ไหมคะ? ถ้าสนใจพิมพ์ชื่อตำแหน่งมาได้เลยค่ะ`
       } else if (chosenTitle === null) {
         // P3: ยังกำกวมหลายตำแหน่งระดับเดียวกัน — ถามให้เลือก (เก็บ brand, ล้าง position/history)
         if (userId) await setState(userId, { phase: 'collecting_info', brand })
@@ -479,6 +485,34 @@ async function handleEvent(event: webhook.Event): Promise<void> {
     if (userId) await setState(userId, { phase: 'collecting_info' })
     await notifyHrApplicant(displayName, state.brand, state.position, state.branch, 'ผู้สมัครส่งเอกสารแล้ว รบกวน HR เข้าไปคุยต่อด้วยนะคะ').catch(() => {})
     replyText = 'ขอบคุณค่ะ 😊 ทีม HR ได้รับข้อมูลแล้ว จะติดต่อกลับหาคุณเร็วๆ นี้นะคะ'
+  } else if (state.phase === 'awaiting_benefit_info') {
+    // #3: ผู้ใช้กด "สวัสดิการ" ตอนยังไม่รู้แบรนด์/ตำแหน่ง → เก็บบริบทมาถามต่อจนครบแล้วตอบสวัสดิการ
+    const jobs = await fetchJobs()
+    const brandFilter = state.brand
+    const jobsForContext = brandFilter
+      ? jobs.filter((j) => j.brand.toLowerCase().includes(brandFilter.toLowerCase()))
+      : jobs
+    const known: KnownJobValues = {
+      branches: Array.from(new Set(jobsForContext.map((j) => j.branch))).slice(0, 40),
+      positions: Array.from(new Set(jobsForContext.map((j) => j.jobTitle))).slice(0, 50),
+    }
+    const extracted = await extractApplicationInfo(userText, known, updatedHistory)
+    const synonymPosition = detectPositionSynonym(userText)
+    const brand = extracted.brand ?? state.brand
+    const position = synonymPosition ?? extracted.position ?? state.position
+
+    if (brand && position) {
+      // ครบแล้ว → ตอบสวัสดิการ แล้วกลับสู่ collecting_info (ล้าง pending benefit)
+      if (userId) await setState(userId, { phase: 'collecting_info', brand, position, branch: state.branch, history: updatedHistory })
+      replyText = await buildBenefitsReply({ phase: 'collecting_info', brand, position, branch: state.branch })
+    } else {
+      // ยังขาด → ถามเฉพาะช่องที่ขาด คงอยู่ awaiting_benefit_info (จำบริบทต่อ)
+      if (userId) await setState(userId, { phase: 'awaiting_benefit_info', brand, position, branch: state.branch, history: updatedHistory })
+      const needBrand = !brand
+      replyText = needBrand
+        ? 'ได้เลยค่ะ 😊 สนใจสวัสดิการของแบรนด์ไหนคะ? (Potato Corner / Khao So-i / Uno Coffee)'
+        : `ได้เลยค่ะ 😊 ${brand} ตำแหน่งไหนที่อยากรู้สวัสดิการคะ? พิมพ์ชื่อตำแหน่งมาได้เลยค่ะ`
+    }
   } else {
     // Safety net: state 'ready' ที่อาจค้างอยู่ → reset แล้วตอบเหมือน flow ใหม่
     if (state?.phase === 'ready' && userId) await setState(userId, { phase: 'collecting_info' })
@@ -544,6 +578,34 @@ async function buildJobsListReply(): Promise<string> {
   const cta = '👇 สนใจอยากสมัครแบรนด์ไหน ตำแหน่งอะไร และสาขาไหน พิมพ์บอกพี่ร็อคกี้มาได้เลยนะคะ 😊'
 
   return `${header}\n\n${brandBlocks.join('\n\n')}\n\n${cta}`
+}
+
+// ปุ่ม Rich Menu "เช็คสาขาใกล้บ้านคุณ" — ลิสต์สาขาที่มีตำแหน่งเปิดจริง จัดกลุ่มตามแบรนด์
+async function buildBranchesReply(): Promise<string> {
+  const jobs = await fetchJobs()
+  const openJobs = jobs.filter((j) => isOpen(j.status))
+
+  if (openJobs.length === 0) {
+    return 'ขณะนี้ยังไม่มีสาขาที่เปิดรับสมัครค่ะ 😔 หากมีข่าวสารจะรีบแจ้งนะคะ'
+  }
+
+  // brand → branches[] (คงลำดับที่พบ, ไม่ซ้ำ)
+  const brandOrder: string[] = []
+  const byBrand: Record<string, string[]> = {}
+  for (const job of openJobs) {
+    if (!byBrand[job.brand]) { byBrand[job.brand] = []; brandOrder.push(job.brand) }
+    if (!byBrand[job.brand].includes(job.branch)) byBrand[job.brand].push(job.branch)
+  }
+
+  const blocks = brandOrder.map((brand) => {
+    const bullets = byBrand[brand].map((branch) => `📍 ${branch}`).join('\n')
+    return `🏢 แบรนด์ ${brand}:\n${bullets}`
+  })
+
+  const header = 'สาขาที่กำลังเปิดรับสมัครอยู่ตอนนี้ค่ะ 🗺️'
+  const cta = '👇 สะดวกสาขาไหน หรืออยู่ย่านไหน พิมพ์บอกพี่ร็อคกี้ได้เลยนะคะ เดี๋ยวเช็กตำแหน่งที่เปิดในสาขานั้นให้ค่ะ 😊'
+
+  return `${header}\n\n${blocks.join('\n\n')}\n\n${cta}`
 }
 
 // ตรวจจับคำเรียกตำแหน่งภาษาไทยจากข้อความผู้ใช้ → คืนชื่อตำแหน่งอังกฤษที่เป็น key

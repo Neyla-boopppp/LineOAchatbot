@@ -9,5 +9,6 @@ export type UserState =
   | ({ phase: 'collecting_info' } & ApplicationInfo)
   | ({ phase: 'awaiting_screening' } & ApplicationInfo)
   | ({ phase: 'awaiting_documents' } & ApplicationInfo)
+  | ({ phase: 'awaiting_benefit_info' } & ApplicationInfo)
   | ({ phase: 'ready' } & ApplicationInfo)
   | ({ phase: 'handover' } & ApplicationInfo)
