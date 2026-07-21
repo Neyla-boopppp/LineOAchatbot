@@ -21,6 +21,48 @@ function responseText(response: { text?: string }): string {
   return response.text?.trim() ?? ''
 }
 
+// error ชั่วคราวจากฝั่ง Gemini ที่ลองใหม่แล้วมีโอกาสผ่าน (429 quota / 503 high demand)
+// เจอจริงบน production 2026-07-21: {"code":503,"status":"UNAVAILABLE","message":"...high demand..."}
+export function isRetriableError(err: unknown): boolean {
+  const e = err as { status?: number; code?: number; message?: string } | null
+  if (!e) return false
+  if (e.status === 429 || e.status === 503 || e.code === 429 || e.code === 503) return true
+  const msg = (e.message ?? String(err)).toUpperCase()
+  return (
+    msg.includes('429') ||
+    msg.includes('RESOURCE_EXHAUSTED') ||
+    msg.includes('503') ||
+    msg.includes('UNAVAILABLE') ||
+    msg.includes('OVERLOADED')
+  )
+}
+
+const RETRY_BACKOFF_MS = [400, 800]
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+// เรียก Gemini แบบ retry เฉพาะ error ชั่วคราว — คุมงบเวลาให้ยังทัน reply token ของ LINE
+// (เพิ่มเวลาสูงสุด 1.2 วิ/การเรียก ยังอยู่ในงบ maxDuration = 30 ของ route)
+type GenerateParams = Parameters<GoogleGenAI['models']['generateContent']>[0]
+
+async function generateWithRetry(params: GenerateParams) {
+  let lastErr: unknown
+  for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
+    try {
+      return await getClient().models.generateContent(params)
+    } catch (err) {
+      lastErr = err
+      if (attempt < RETRY_BACKOFF_MS.length && isRetriableError(err)) {
+        console.warn('[chatbot-ai:retry]', { attempt: attempt + 1, wait_ms: RETRY_BACKOFF_MS[attempt] })
+        await sleep(RETRY_BACKOFF_MS[attempt])
+        continue
+      }
+      throw err
+    }
+  }
+  throw lastErr
+}
+
 const SYSTEM_PROMPT_TEMPLATE = `<role>
 คุณคือพี่ร็อคกี้ (Rockie) พนักงาน HR ของบริษัท Rocksgroup ดูแลแบรนด์ Potato Corner, Khao So-i และ Uno Coffee
 </role>
@@ -107,7 +149,7 @@ export async function generateReply(
   const systemPrompt = `${SYSTEM_PROMPT_TEMPLATE}\n<jobs>\n${jobsText}\n</jobs>`
 
   try {
-    const response = await getClient().models.generateContent({
+    const response = await generateWithRetry({
       model: MODEL,
       contents: `<question>${question}</question>`,
       config: {
@@ -163,7 +205,7 @@ ${jobsText}
 ตอบด้วย OK หรือ NOT_OK เท่านั้น`
 
   try {
-    const response = await getClient().models.generateContent({
+    const response = await generateWithRetry({
       model: MODEL,
       contents: prompt,
       config: {
@@ -189,6 +231,9 @@ export type ExtractedInfo = {
   brand: string | null
   position: string | null
   branch: string | null
+  // true = เรียก Gemini ไม่สำเร็จ (เช่น 503) — คนละเรื่องกับ "ผู้ใช้ไม่ได้บอกข้อมูลมา"
+  // ผู้เรียกต้องเช็คก่อนเสมอ ไม่งั้นจะไปตอบ "ยังไม่ได้ระบุแบรนด์" ทั้งที่ผู้ใช้บอกมาแล้ว
+  failed?: true
 }
 
 export type KnownJobValues = {
@@ -210,7 +255,7 @@ ${known.positions?.length ? `ตำแหน่ง: ${known.positions.join(', ')
     : ''
 
   try {
-    const response = await getClient().models.generateContent({
+    const response = await generateWithRetry({
       model: MODEL,
       contents: text,
       config: {
@@ -251,7 +296,7 @@ ${known.positions?.length ? `ตำแหน่ง: ${known.positions.join(', ')
     }
   } catch (err) {
     console.error('[chatbot-ai:extract] Error:', err)
-    return { brand: null, position: null, branch: null }
+    return { brand: null, position: null, branch: null, failed: true }
   }
 }
 
@@ -262,7 +307,7 @@ export async function resolveBranchName(
 ): Promise<string | null> {
   if (!knownBranches.length) return null
   try {
-    const response = await getClient().models.generateContent({
+    const response = await generateWithRetry({
       model: MODEL,
       contents: userInput,
       config: {
@@ -316,7 +361,7 @@ export type ScreeningResult = {
 
 export async function extractScreeningInfo(text: string): Promise<ScreeningResult> {
   try {
-    const response = await getClient().models.generateContent({
+    const response = await generateWithRetry({
       model: MODEL,
       contents: text,
       config: {

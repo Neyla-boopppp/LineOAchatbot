@@ -21,8 +21,71 @@ import {
   extractApplicationInfo,
   extractScreeningInfo,
   generateReply,
+  isRetriableError,
   resolveBranchName,
 } from '../lib/ai/chatbot-ai'
+
+// error จริงที่เจอบน production 2026-07-21 — Gemini คืน 503 รัวๆ ตอน 21:17-21:18
+const GEMINI_503 = Object.assign(
+  new Error('{"error":{"code":503,"message":"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.","status":"UNAVAILABLE"}}'),
+  { status: 503 },
+)
+
+describe('isRetriableError — แยก error ชั่วคราวออกจาก error ถาวร', () => {
+  it('503 UNAVAILABLE จาก Gemini (เคสจริงบน production) → retry ได้', () => {
+    expect(isRetriableError(GEMINI_503)).toBe(true)
+  })
+
+  it('รู้จัก 429 / RESOURCE_EXHAUSTED / OVERLOADED', () => {
+    expect(isRetriableError({ status: 429 })).toBe(true)
+    expect(isRetriableError(new Error('RESOURCE_EXHAUSTED: quota'))).toBe(true)
+    expect(isRetriableError(new Error('model is OVERLOADED'))).toBe(true)
+  })
+
+  it('error ถาวรไม่ retry (กันหน่วงเวลาเปล่าจน reply token หมดอายุ)', () => {
+    expect(isRetriableError({ status: 400, message: 'Invalid argument' })).toBe(false)
+    expect(isRetriableError(new Error('bad request'))).toBe(false)
+    expect(isRetriableError(null)).toBe(false)
+  })
+})
+
+describe('generateWithRetry — Gemini ล่มชั่วคราวต้องไม่ทำให้บอทเงียบ', () => {
+  beforeEach(() => {
+    generateContent.mockReset()
+    process.env.GEMINI_API_KEY = 'test-key'
+  })
+
+  it('เจอ 503 แล้วลองใหม่จนสำเร็จ', async () => {
+    generateContent
+      .mockRejectedValueOnce(GEMINI_503)
+      .mockResolvedValueOnce({ text: JSON.stringify({ brand: 'Khao So-i', position: null, branch: null }) })
+
+    const result = await extractApplicationInfo('แบรนด์ Khao Soi')
+
+    expect(generateContent).toHaveBeenCalledTimes(2)
+    expect(result.brand).toBe('Khao So-i')
+    expect(result.failed).toBeUndefined()
+  })
+
+  it('503 ทุกครั้ง → ตั้ง failed:true ไม่ใช่คืน null เฉยๆ (กันบอทตอบ "ยังไม่ได้ระบุแบรนด์")', async () => {
+    generateContent.mockRejectedValue(GEMINI_503)
+
+    const result = await extractApplicationInfo('แบรนด์ Khao Soi ตำแหน่งล้างจาน')
+
+    expect(generateContent).toHaveBeenCalledTimes(3) // ครั้งแรก + retry 2
+    expect(result.failed).toBe(true)
+    expect(result.brand).toBeNull()
+  })
+
+  it('error ถาวรไม่ retry', async () => {
+    generateContent.mockRejectedValue(new Error('bad request'))
+
+    const result = await extractApplicationInfo('ทดสอบ')
+
+    expect(generateContent).toHaveBeenCalledTimes(1)
+    expect(result.failed).toBe(true)
+  })
+})
 
 describe('Gemini Developer API configuration', () => {
   beforeEach(() => {
@@ -124,6 +187,9 @@ describe('Gemini chatbot adapter', () => {
       brand: null,
       position: null,
       branch: null,
+      // JSON พังก็คือ "อ่านข้อความผู้ใช้ไม่ได้" เหมือนกัน — ต้องขอให้พิมพ์ใหม่
+      // ไม่ใช่ไปตอบ "ยังไม่ได้ระบุแบรนด์" ทั้งที่ผู้ใช้อาจบอกมาครบแล้ว
+      failed: true,
     })
   })
 

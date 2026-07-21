@@ -4,7 +4,7 @@ import { fetchJobs } from '@/lib/data/sheet'
 import { filterJobs, formatJobsForAI, isOpen } from '@/lib/data/job-search'
 import { generateReply, doubleCheck, DEFAULT_REPLY, extractApplicationInfo, extractScreeningInfo, resolveBranchName, type KnownJobValues } from '@/lib/ai/chatbot-ai'
 import { notifyHrGroup, notifyHrApplicant, notifyHrHandover } from '@/lib/line/notify'
-import { getState, setState, WELCOME_MESSAGE, NON_THAI_DOCS, NON_THAI_BRAND_RULE, isForeignEligibleBrand, buildNonThaiWrongBrandMessage, APPLY_PROMPT, FAQ_INTRO, FAQ_AGE_ANSWER, FAQ_PARTTIME_FALLBACK, BENEFIT_ASK, buildSummaryMessage, buildMissingMessage, type UserState } from '@/lib/session/screening'
+import { getState, setState, WELCOME_MESSAGE, NON_THAI_DOCS, NON_THAI_BRAND_RULE, isForeignEligibleBrand, buildNonThaiWrongBrandMessage, APPLY_PROMPT, FAQ_INTRO, FAQ_AGE_ANSWER, FAQ_PARTTIME_FALLBACK, BENEFIT_ASK, BENEFIT_ASK_HANDOVER, AI_UNAVAILABLE, buildSummaryMessage, buildMissingMessage, type UserState } from '@/lib/session/screening'
 import { detectRichMenuIntent, parsePostbackIntent, isSilentMenuText, READ_ONLY_INTENTS, type MenuIntent } from '@/lib/line/menu'
 import { buildPerksFlex, buildFaqQuickReply } from '@/lib/line/flex'
 
@@ -123,8 +123,11 @@ async function runMenuAction(
     // ในโหมด handover ไม่แตะ state (กันหลุดออกจาก handover) — ตอบข้อมูลอย่างเดียว
     if (state?.brand && state?.position) {
       await sendReply(replyToken, await buildBenefitsReply(state))
+    } else if (state?.phase === 'handover') {
+      // ห้ามถามกลับตอน handover — ตั้ง state รอคำตอบไม่ได้ ผู้ใช้จะตอบแล้วเจอบอทเงียบ
+      await sendReply(replyToken, BENEFIT_ASK_HANDOVER)
     } else {
-      if (userId && state?.phase !== 'handover') {
+      if (userId) {
         await setState(userId, { phase: 'awaiting_benefit_info', brand: state?.brand, position: state?.position, branch: state?.branch, history: state?.history })
       }
       await sendReply(replyToken, BENEFIT_ASK)
@@ -276,6 +279,14 @@ async function handleEvent(event: webhook.Event): Promise<void> {
     return
   }
 
+  // ── "คุยกับบอท" ตอนที่ไม่ได้อยู่ handover แล้ว ──
+  // เดิมตกไปเข้า flow ปกติ → ถูกส่งให้ LLM ตีความ แล้วตอบ "ยังไม่ได้ระบุแบรนด์..." ซึ่งงงมาก
+  // ตอบให้ชัดว่าคุยกับบอทอยู่แล้ว โดยไม่แตะ state
+  if (looksLikeResumeBot(userText)) {
+    await sendReply(replyToken, 'คุยกับพี่ร็อคกี้อยู่แล้วนะคะ 😊 มีอะไรให้ช่วยตรวจสอบไหมคะ? (แบรนด์ / ตำแหน่ง / สาขา)')
+    return
+  }
+
   // ── Rich Menu: ติดต่อเจ้าหน้าที่ → เข้าสู่โหมด handover — แตะ state จึงมาหลัง handover check ──
   if (menuIntent === 'contact') {
     await runMenuAction('contact', replyToken, userId, displayName, state)
@@ -334,6 +345,14 @@ async function handleEvent(event: webhook.Event): Promise<void> {
     }
 
     const extracted = await extractApplicationInfo(userText, known, updatedHistory)
+
+    // Gemini ล่ม (429/503) → อ่านข้อความผู้ใช้ไม่ได้เลย ห้ามเขียนทับ state และห้ามตอบ
+    // "ยังไม่ได้ระบุแบรนด์..." เพราะผู้ใช้อาจบอกมาครบแล้ว แค่ระบบอ่านไม่ออก
+    if (extracted.failed) {
+      await sendReply(replyToken, AI_UNAVAILABLE)
+      return
+    }
+
     const brand = extracted.brand ?? state.brand
     // Synonym mapping: คำไทยหลวมๆ (เช่น "พนักงานล้างจาน") → ชื่อตำแหน่งอังกฤษในระบบ ("steward")
     // ทำก่อน filter และให้มาก่อนผล LLM เพื่อกัน hallucination (เช่น แมปผิดเป็น "Runner")
@@ -551,6 +570,10 @@ async function handleEvent(event: webhook.Event): Promise<void> {
       positions: Array.from(new Set(jobsForContext.map((j) => j.jobTitle))).slice(0, 50),
     }
     const extracted = await extractApplicationInfo(userText, known, updatedHistory)
+    if (extracted.failed) {
+      await sendReply(replyToken, AI_UNAVAILABLE)
+      return
+    }
     const synonymPosition = detectPositionSynonym(userText)
     const brand = extracted.brand ?? state.brand
     const position = synonymPosition ?? extracted.position ?? state.position
