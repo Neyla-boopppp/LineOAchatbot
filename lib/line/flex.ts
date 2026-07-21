@@ -115,6 +115,27 @@ export type BrandJobGroup = {
   branches: { branch: string; positions: string[] }[]
 }
 
+// ── โลโก้แบรนด์บนหัวการ์ด ──
+//
+// LINE ฝังไฟล์รูปลง Flex ไม่ได้ ต้องเป็น URL https สาธารณะเท่านั้น
+// ไฟล์จึงอยู่ใน public/brands/ แล้วเสิร์ฟผ่านโดเมน production
+// (ตั้ง NEXT_PUBLIC_BASE_URL ทับได้ เผื่อวันหน้าเปลี่ยนโดเมน)
+const BASE_URL = (process.env.NEXT_PUBLIC_BASE_URL ?? 'https://lineoa-chatbot.vercel.app').replace(/\/$/, '')
+
+// สีพื้นต้องตรงกับพื้นหลังที่ติดมากับไฟล์โลโก้ เพราะใช้ aspectMode 'fit'
+// (โลโก้แต่ละแบรนด์สัดส่วนไม่เท่ากัน ถ้าใช้ 'cover' โลโก้แนวยาวอย่าง Potato Corner จะโดนครอบตัด)
+const BRAND_LOGOS: { match: string; file: string; background: string }[] = [
+  { match: 'khaosoi', file: 'khao-so-i.png', background: '#5E4620' },
+  { match: 'potatocorner', file: 'potato-corner.png', background: '#FFFFFF' },
+  { match: 'uno', file: 'uno-coffee.png', background: '#E8E3C8' },
+]
+
+function brandLogo(brand: string): { url: string; background: string } | null {
+  const n = brand.toLowerCase().replace(/[-\s!]+/g, '')
+  const hit = BRAND_LOGOS.find((logo) => n.includes(logo.match))
+  return hit ? { url: `${BASE_URL}/brands/${hit.file}`, background: hit.background } : null
+}
+
 // ปุ่มท้ายการ์ดแต่ละแบรนด์ → ส่งชื่อแบรนด์เข้า flow เก็บข้อมูลปกติ
 // (ไม่ match Rich Menu intent ใด ๆ จึงไหลไป extractApplicationInfo แล้วถามตำแหน่ง/สาขาต่อ)
 export function buildBrandInterestText(brand: string): string {
@@ -148,8 +169,21 @@ function brandBubble(group: BrandJobGroup): messagingApi.FlexBubble {
     body.push({ type: 'text', text: `และอีก ${hiddenBranches} สาขา`, size: 'xs', color: TEXT_MUTED, wrap: true })
   }
 
+  const logo = brandLogo(group.brand)
+
   return {
     type: 'bubble',
+    // แบรนด์ที่ยังไม่มีไฟล์โลโก้ → ไม่ใส่ hero ไปเลย (การ์ดยังใช้ได้ปกติ ไม่ขึ้นรูปเสีย)
+    ...(logo && {
+      hero: {
+        type: 'image' as const,
+        url: logo.url,
+        size: 'full' as const,
+        aspectRatio: '20:13',
+        aspectMode: 'fit' as const,
+        backgroundColor: logo.background,
+      },
+    }),
     header: {
       type: 'box',
       layout: 'vertical',
