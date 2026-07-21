@@ -111,6 +111,99 @@ export function buildPerksFlex(): messagingApi.FlexMessage {
   }
 }
 
+// ── Rich Menu "ตำแหน่งงานที่เปิดรับ" (RM1) — carousel 1 การ์ดต่อ 1 แบรนด์ ──
+//
+// ข้อจำกัดของ LINE ที่ต้องกันไว้ (เกินแล้ว LINE ตีกลับทั้งข้อความ ผู้ใช้จะเห็นบอทเงียบ):
+//   • carousel ได้ไม่เกิน 12 bubble → cap ที่ MAX_BRANDS
+//   • Flex ทั้งก้อนต้องไม่เกิน 50KB → cap สาขา/ตำแหน่งต่อการ์ด แล้วสรุปส่วนที่เกินเป็นบรรทัดเดียว
+//   • label ของปุ่มยาวได้ไม่เกิน 20 ตัวอักษร
+const MAX_BRANDS = 12
+const MAX_BRANCHES_PER_BRAND = 8
+const MAX_POSITIONS_PER_BRANCH = 6
+
+export type BrandJobGroup = {
+  brand: string
+  branches: { branch: string; positions: string[] }[]
+}
+
+// ปุ่มท้ายการ์ดแต่ละแบรนด์ → ส่งชื่อแบรนด์เข้า flow เก็บข้อมูลปกติ
+// (ไม่ match Rich Menu intent ใด ๆ จึงไหลไป extractApplicationInfo แล้วถามตำแหน่ง/สาขาต่อ)
+export function buildBrandInterestText(brand: string): string {
+  return `สนใจสมัคร ${brand}`
+}
+
+// 1 สาขา = 1 กล่อง (ตำแหน่งชิดใต้ชื่อสาขา) — ระยะห่างระหว่างสาขาคุมที่กล่องนอก
+// ถ้าปล่อยเป็น text เรียงกันเฉยๆ spacing ของ body จะดันทุกบรรทัดห่างเท่ากัน อ่านแล้วไม่จับกลุ่ม
+function branchBlock(branch: string, positions: string[]): messagingApi.FlexBox {
+  const shown = positions.slice(0, MAX_POSITIONS_PER_BRANCH)
+  const rest = positions.length - shown.length
+  const lines: messagingApi.FlexComponent[] = [
+    { type: 'text', text: `📍 ${branch}`, size: 'sm', weight: 'bold', color: TEXT_MAIN, wrap: true },
+  ]
+  for (const position of shown) {
+    lines.push({ type: 'text', text: `• ${position}`, size: 'xs', color: TEXT_MUTED, wrap: true })
+  }
+  if (rest > 0) {
+    lines.push({ type: 'text', text: `• และอีก ${rest} ตำแหน่ง`, size: 'xs', color: TEXT_MUTED, wrap: true })
+  }
+  return { type: 'box', layout: 'vertical', spacing: 'none', contents: lines }
+}
+
+function brandBubble(group: BrandJobGroup): messagingApi.FlexBubble {
+  const branches = group.branches.slice(0, MAX_BRANCHES_PER_BRAND)
+  const hiddenBranches = group.branches.length - branches.length
+  const totalPositions = group.branches.reduce((sum, b) => sum + b.positions.length, 0)
+
+  const body: messagingApi.FlexComponent[] = branches.map((b) => branchBlock(b.branch, b.positions))
+  if (hiddenBranches > 0) {
+    body.push({ type: 'text', text: `และอีก ${hiddenBranches} สาขา`, size: 'xs', color: TEXT_MUTED, wrap: true })
+  }
+
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: 'lg',
+      backgroundColor: BRAND_COLOR,
+      contents: [
+        { type: 'text', text: 'ตำแหน่งงานที่เปิดรับ', size: 'xs', color: '#FFFFFFCC' },
+        { type: 'text', text: group.brand, size: 'lg', weight: 'bold', color: '#FFFFFF', wrap: true },
+        { type: 'text', text: `${totalPositions} ตำแหน่ง`, size: 'xs', color: '#FFFFFFCC' },
+      ],
+    },
+    body: { type: 'box', layout: 'vertical', spacing: 'md', paddingAll: 'lg', contents: body },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: 'lg',
+      contents: [
+        {
+          type: 'button',
+          style: 'primary',
+          height: 'sm',
+          color: BRAND_COLOR,
+          action: { type: 'message', label: 'สนใจแบรนด์นี้', text: buildBrandInterestText(group.brand) },
+        },
+      ],
+    },
+  }
+}
+
+// คืน null เมื่อไม่มีงานเปิดรับ — ให้ผู้เรียกตอบเป็นข้อความธรรมดาแทน (Flex ที่ไม่มี bubble ส่งไม่ได้)
+export function buildJobsFlex(groups: BrandJobGroup[]): messagingApi.FlexMessage | null {
+  const usable = groups.filter((g) => g.branches.length > 0).slice(0, MAX_BRANDS)
+  if (usable.length === 0) return null
+
+  const brandNames = usable.map((g) => g.brand).join(', ')
+  return {
+    type: 'flex',
+    // altText โผล่ใน notification และประวัติแชต — ต้องอ่านรู้เรื่องโดยไม่ต้องเปิดการ์ด
+    altText: `ตำแหน่งงานที่เปิดรับของ ${brandNames}`.slice(0, 400),
+    contents: { type: 'carousel', contents: usable.map(brandBubble) },
+  }
+}
+
 // คำถามยอดฮิตที่จะโชว์เป็นปุ่มกลม (Quick Reply)
 // ข้อความ (text) ต้องตรงกับที่ detectRichMenuIntent() รู้จัก — label โชว์บนปุ่ม (LINE จำกัด 20 ตัวอักษร)
 export const FAQ_QUICK_ITEMS: { label: string; text: string }[] = [

@@ -6,7 +6,8 @@ import { generateReply, doubleCheck, DEFAULT_REPLY, extractApplicationInfo, extr
 import { notifyHrGroup, notifyHrApplicant, notifyHrHandover } from '@/lib/line/notify'
 import { getState, setState, WELCOME_MESSAGE, NON_THAI_DOCS, NON_THAI_BRAND_RULE, isForeignEligibleBrand, buildNonThaiWrongBrandMessage, APPLY_PROMPT, FAQ_INTRO, FAQ_AGE_ANSWER, FAQ_PARTTIME_FALLBACK, BENEFIT_ASK, BENEFIT_ASK_HANDOVER, AI_UNAVAILABLE, buildSummaryMessage, buildMissingMessage, type UserState } from '@/lib/session/screening'
 import { detectRichMenuIntent, parsePostbackIntent, isSilentMenuText, READ_ONLY_INTENTS, type MenuIntent } from '@/lib/line/menu'
-import { buildPerksFlex, buildFaqQuickReply } from '@/lib/line/flex'
+import { buildPerksFlex, buildFaqQuickReply, buildJobsFlex, type BrandJobGroup } from '@/lib/line/flex'
+import type { JobListing } from '@/types/job'
 
 export const maxDuration = 30
 
@@ -325,7 +326,8 @@ async function handleEvent(event: webhook.Event): Promise<void> {
   }
 
   const FOLLOW_UP_Q = 'ก่อนอื่นขอสอบถามข้อมูลเบื้องต้นก่อนนะคะ 😊 สัญชาติอะไร อายุเท่าไหร่ เพศอะไรคะ?'
-  let replyText: string | string[]
+  // รับ Flex ได้ด้วย — buildJobsListReply() คืน carousel ตำแหน่งงาน ไม่ใช่ข้อความล้วนแล้ว
+  let replyText: ReplyItem | ReplyItem[]
 
   if (!state) {
     if (userId) await setState(userId, { phase: 'collecting_info' })
@@ -620,41 +622,36 @@ async function buildBenefitsReply(state: UserState | undefined): Promise<string>
   return 'สวัสดิการและผลตอบแทนจะแตกต่างกันไปตามตำแหน่งและแบรนด์ค่ะ 😊\nบอกพี่ร็อคกี้ได้เลยว่าสนใจแบรนด์ไหน ตำแหน่งอะไร เดี๋ยวดึงรายละเอียดสวัสดิการมาให้ค่ะ 🫡'
 }
 
-async function buildJobsListReply(): Promise<string> {
+const NO_OPEN_JOBS = 'ขณะนี้ยังไม่มีตำแหน่งที่เปิดรับสมัครค่ะ 😔 หากมีข่าวสารจะรีบแจ้งนะคะ'
+
+// จัดกลุ่มงานที่เปิดรับเป็น brand → branch → positions[] (คงลำดับที่พบใน Sheet, ไม่ซ้ำ)
+function groupOpenJobsByBrand(jobs: JobListing[]): BrandJobGroup[] {
+  const order: string[] = []
+  const byBrand: Record<string, Record<string, string[]>> = {}
+  for (const job of jobs) {
+    if (!byBrand[job.brand]) { byBrand[job.brand] = {}; order.push(job.brand) }
+    const branches = byBrand[job.brand]
+    if (!branches[job.branch]) branches[job.branch] = []
+    if (!branches[job.branch].includes(job.jobTitle)) branches[job.branch].push(job.jobTitle)
+  }
+  return order.map((brand) => ({
+    brand,
+    branches: Object.entries(byBrand[brand]).map(([branch, positions]) => ({ branch, positions })),
+  }))
+}
+
+// RM1 "ตำแหน่งงานที่เปิดรับ" + ตอนผู้ใช้ถามกว้างๆ โดยยังไม่รู้แบรนด์
+// → carousel 1 การ์ดต่อ 1 แบรนด์ พร้อมข้อความนำหน้า (Flex ไม่มีที่ใส่ CTA ยาวๆ)
+async function buildJobsListReply(): Promise<ReplyItem[]> {
   const jobs = await fetchJobs()
   const openJobs = jobs.filter((j) => isOpen(j.status))
+  const flex = buildJobsFlex(groupOpenJobsByBrand(openJobs))
+  if (!flex) return [NO_OPEN_JOBS]
 
-  if (openJobs.length === 0) {
-    return 'ขณะนี้ยังไม่มีตำแหน่งที่เปิดรับสมัครค่ะ 😔 หากมีข่าวสารจะรีบแจ้งนะคะ'
-  }
-
-  // brand → branch → positions[] (จัดกลุ่มตามแบรนด์ก่อน แล้วย่อยตามสาขา, คงลำดับที่พบ)
-  const brandOrder: string[] = []
-  const byBrand: Record<string, { branchOrder: string[]; byBranch: Record<string, string[]> }> = {}
-  for (const job of openJobs) {
-    if (!byBrand[job.brand]) { byBrand[job.brand] = { branchOrder: [], byBranch: {} }; brandOrder.push(job.brand) }
-    const brandData = byBrand[job.brand]
-    if (!brandData.byBranch[job.branch]) { brandData.byBranch[job.branch] = []; brandData.branchOrder.push(job.branch) }
-    if (!brandData.byBranch[job.branch].includes(job.jobTitle)) brandData.byBranch[job.branch].push(job.jobTitle)
-  }
-
-  // แต่ละแบรนด์เป็น 1 block — ภายในแยกตามสาขา แล้วไล่ตำแหน่งเป็น bullet
-  // เว้น 1 บรรทัดว่างคั่นระหว่าง block ให้อ่านง่ายใน LINE
-  const brandBlocks = brandOrder.map((brand) => {
-    const { branchOrder, byBranch } = byBrand[brand]
-    const branchBlocks = branchOrder
-      .map((branch) => {
-        const bullets = byBranch[branch].map((position) => `• ตำแหน่ง ${position}`).join('\n')
-        return `📍 สาขา ${branch}\n${bullets}`
-      })
-      .join('\n\n')
-    return `🏢 แบรนด์ ${brand}:\n${branchBlocks}`
-  })
-
-  const header = 'อัปเดตตำแหน่งงานว่างของ Rocks Group ประจำวันนี้ค่ะ 🚀'
-  const cta = '👇 สนใจอยากสมัครแบรนด์ไหน ตำแหน่งอะไร และสาขาไหน พิมพ์บอกพี่ร็อคกี้มาได้เลยนะคะ 😊'
-
-  return `${header}\n\n${brandBlocks.join('\n\n')}\n\n${cta}`
+  return [
+    'อัปเดตตำแหน่งงานว่างของ Rocks Group ประจำวันนี้ค่ะ 🚀\n👇 เลื่อนดูแต่ละแบรนด์ได้เลยนะคะ สนใจแบรนด์ไหนกดปุ่มในการ์ดได้เลยค่ะ 😊',
+    flex,
+  ]
 }
 
 // ปุ่ม Rich Menu "เช็คสาขาใกล้บ้านคุณ" — ลิสต์สาขาที่มีตำแหน่งเปิดจริง จัดกลุ่มตามแบรนด์
