@@ -5,16 +5,11 @@
 //    ถ้าแก้ข้อความปุ่มที่นี่ ต้องแก้ที่ menu.ts ด้วย ไม่งั้นปุ่มจะกดแล้วเงียบ
 
 import type { messagingApi } from '@line/bot-sdk'
+import { APPLY_ONLINE_TEXT } from './menu'
 
 const BRAND_COLOR = '#E8A33D'
 const TEXT_MUTED = '#8C8C8C'
 const TEXT_MAIN = '#333333'
-
-// ปุ่มท้ายการ์ดสิทธิ → ไหลเข้า intent 'benefits' (ดึงสวัสดิการรายตำแหน่งจาก Sheet)
-//
-// ⚠️ ห้ามใช้ 'สวัสดิการและผลตอบแทน' — นั่นคือ action text ของปุ่ม RM3 ที่ map เป็น intent 'perks'
-//    ถ้าใช้ซ้ำ ปุ่มในการ์ดจะเด้งการ์ดใบเดิมกลับมาวนไม่รู้จบ
-export const PERKS_DETAIL_TEXT = 'สวัสดิการตามตำแหน่ง'
 
 // รายการสิทธิที่จะได้รับ
 //
@@ -84,19 +79,13 @@ export function buildPerksFlex(): messagingApi.FlexMessage {
         paddingAll: 'lg',
         contents: PERKS.map(perkRow),
       },
+      // ไม่มีปุ่มโดยตั้งใจ — ลูกค้าเลือกให้โชว์สวัสดิการกว้าง ๆ พอ ไม่ต้องเจาะรายตำแหน่ง
       footer: {
         type: 'box',
         layout: 'vertical',
         spacing: 'sm',
         paddingAll: 'lg',
         contents: [
-          {
-            type: 'button',
-            style: 'primary',
-            height: 'sm',
-            color: BRAND_COLOR,
-            action: { type: 'message', label: 'สวัสดิการตามตำแหน่ง', text: PERKS_DETAIL_TEXT },
-          },
           {
             type: 'text',
             text: 'สวัสดิการต่างกันตามแบรนด์ ตำแหน่ง และสาขานะคะ\nอยากรู้ของตำแหน่งไหน ถามพี่ร็อคกี้ได้เลย 😊',
@@ -176,14 +165,24 @@ function brandBubble(group: BrandJobGroup): messagingApi.FlexBubble {
     footer: {
       type: 'box',
       layout: 'vertical',
+      spacing: 'sm',
       paddingAll: 'lg',
       contents: [
+        // เข้า flow บอท — เก็บบริบทแบรนด์ไว้ แล้วบอทถามตำแหน่ง/สาขาต่อ
         {
           type: 'button',
           style: 'primary',
           height: 'sm',
           color: BRAND_COLOR,
           action: { type: 'message', label: 'สนใจแบรนด์นี้', text: buildBrandInterestText(group.brand) },
+        },
+        // เลียนแบบการกดปุ่ม RM2 — บอทเงียบ แล้ว OA Manager เด้งการ์ดสมัครงานขึ้นมา
+        // (ปุ่ม Flex สลับ Rich Menu เองไม่ได้ ดูคอมเมนต์ที่ APPLY_ONLINE_TEXT ใน menu.ts)
+        {
+          type: 'button',
+          style: 'secondary',
+          height: 'sm',
+          action: { type: 'message', label: 'สมัครงานออนไลน์', text: APPLY_ONLINE_TEXT },
         },
       ],
     },
