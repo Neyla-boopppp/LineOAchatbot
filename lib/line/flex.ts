@@ -6,6 +6,7 @@
 
 import type { messagingApi } from '@line/bot-sdk'
 import { APPLY_ONLINE_TEXT } from './menu'
+import { zoneLabel, zonePostbackData, type ZoneId } from './zones'
 
 const BRAND_COLOR = '#E8A33D'
 const TEXT_MUTED = '#8C8C8C'
@@ -15,8 +16,12 @@ const TEXT_MAIN = '#333333'
 //
 // ⚠️ แหล่งที่มา: คัดลอกจากคอลัมน์ `Benefit` ใน Google Sheet (ชีต Job_Vacancies) เมื่อ 2026-07-21
 //    ห้ามแต่งตัวเลข/สวัสดิการเพิ่มเอง — ถ้า Sheet เปลี่ยน ต้องกลับมาแก้ที่นี่ด้วย
-//    (ตอนคัดลอก คอลัมน์นี้มีข้อมูลเฉพาะแบรนด์ Khao So-i — Potato Corner ยังว่าง
-//     จึงต้องไม่สื่อว่าทุกแบรนด์/ทุกตำแหน่งได้ครบทุกข้อ ดู caption ท้ายการ์ด)
+//
+// ⚠️ ตอนคัดลอก คอลัมน์นี้มีข้อมูลเฉพาะแบรนด์ Khao So-i (Potato Corner ยังว่าง)
+//    เดิมมี caption ท้ายการ์ดกำกับว่า "สวัสดิการต่างกันตามแบรนด์ ตำแหน่ง และสาขา"
+//    แต่ลูกค้าขอตัดออกแล้ว (2026-07-21) การ์ดจึงไม่มี disclaimer บนหน้าจอ
+//    → รายการที่ใส่ตรงนี้ต้องเป็นสวัสดิการที่ให้ "ทุกแบรนด์ ทุกตำแหน่ง" จริงเท่านั้น
+//    ข้อไหนที่ได้เฉพาะบางแบรนด์ ห้ามเอามาใส่
 //
 // ไม่ใส่ "เงินเดือนเริ่มต้น" โดยตั้งใจ — ระบุไว้ในโพสรับสมัครแล้ว และอยากให้ผู้สมัครถามเข้ามาเอง
 // เพื่อให้บอทตอบเป็นรายตำแหน่งจาก Sheet ได้ตรงกว่า
@@ -79,23 +84,8 @@ export function buildPerksFlex(): messagingApi.FlexMessage {
         paddingAll: 'lg',
         contents: PERKS.map(perkRow),
       },
-      // ไม่มีปุ่มโดยตั้งใจ — ลูกค้าเลือกให้โชว์สวัสดิการกว้าง ๆ พอ ไม่ต้องเจาะรายตำแหน่ง
-      footer: {
-        type: 'box',
-        layout: 'vertical',
-        spacing: 'sm',
-        paddingAll: 'lg',
-        contents: [
-          {
-            type: 'text',
-            text: 'สวัสดิการต่างกันตามแบรนด์ ตำแหน่ง และสาขานะคะ\nอยากรู้ของตำแหน่งไหน ถามพี่ร็อคกี้ได้เลย 😊',
-            size: 'xxs',
-            color: TEXT_MUTED,
-            wrap: true,
-            align: 'center',
-          },
-        ],
-      },
+      // ไม่มีทั้งปุ่มและ footer โดยตั้งใจ — ลูกค้าเลือกให้โชว์สวัสดิการหลักกว้าง ๆ พอ
+      // (ผู้สมัครยังพิมพ์ 'สวัสดิการตามตำแหน่ง' เองเพื่อเข้า flow รายตำแหน่งได้อยู่)
     },
   }
 }
@@ -242,16 +232,136 @@ export const FAQ_QUICK_ITEMS: { label: string; text: string }[] = [
   { label: 'ตำแหน่งงานที่เปิดรับ', text: 'ตำแหน่งงานที่เปิดรับ' },
 ]
 
-// Rich Menu "คำถามที่พบบ่อย" — ข้อความนำ + ปุ่มกลมให้กดเลือก
-export function buildFaqQuickReply(text: string): messagingApi.TextMessage {
+// ข้อความ + ปุ่มกลม (Quick Reply) — ใช้ร่วมกันทั้ง FAQ และตัวเลือกโซน
+// LINE จำกัด 13 ปุ่ม และ label ยาวได้ไม่เกิน 20 ตัวอักษร (มีเทสคุมที่ผู้เรียก)
+export function buildQuickReply(text: string, actions: messagingApi.Action[]): messagingApi.TextMessage {
   return {
     type: 'text',
     text,
-    quickReply: {
-      items: FAQ_QUICK_ITEMS.map((item) => ({
-        type: 'action',
-        action: { type: 'message', label: item.label, text: item.text },
-      })),
+    quickReply: { items: actions.map((action) => ({ type: 'action', action })) },
+  }
+}
+
+// Rich Menu "คำถามที่พบบ่อย" — ข้อความนำ + ปุ่มกลมให้กดเลือก
+export function buildFaqQuickReply(text: string): messagingApi.TextMessage {
+  return buildQuickReply(
+    text,
+    FAQ_QUICK_ITEMS.map((item) => ({ type: 'message', label: item.label, text: item.text })),
+  )
+}
+
+// ── Rich Menu "เช็คสาขาใกล้บ้านคุณ" — เลือกโซน แล้วค่อยดูสาขาในโซนนั้น ──
+
+// ปุ่มโซนใช้ postback ไม่ใช่ message action — กันชื่อโซนไปชนกับ intent ข้อความ/flow AI
+// displayText ทำให้ประวัติแชตยังอ่านรู้เรื่องว่าผู้ใช้เลือกโซนไหน
+export function buildZonePickerReply(text: string, zones: ZoneId[]): messagingApi.TextMessage {
+  return buildQuickReply(
+    text,
+    zones.map((id) => ({
+      type: 'postback',
+      label: zoneLabel(id),
+      data: zonePostbackData(id),
+      displayText: zoneLabel(id),
+    })),
+  )
+}
+
+export type ZoneBranchEntry = {
+  brand: string
+  branch: string
+  positions: string[]
+}
+
+// ชื่อสาขาใน Sheet เป็นแบบ 'เซนทรัล พระราม 2 (Central  Rama2(Fl.4))'
+// ตัดวงเล็บท้ายทิ้งเพื่อให้ทั้งหัวการ์ดและคำค้น Maps สะอาด
+function cleanBranchName(branch: string): string {
+  return branch.replace(/\([\s\S]*$/, '').trim() || branch.trim()
+}
+
+// ⚠️ ลิงก์นี้เป็น "ผลค้นหา" ของ Google Maps ไม่ใช่หมุดที่ยืนยันพิกัดแล้ว
+//    สาขาที่ชื่อกำกวมอาจเปิดไปผิดที่ ทางแก้ระยะยาวคือเพิ่มคอลัมน์ Map_URL ใน Sheet
+//    (mapToJobListing() ใน lib/data/sheet.ts อ่าน header ตามชื่อ เพิ่มคอลัมน์ได้โดยไม่พังของเดิม)
+export function mapsSearchUrl(brand: string, branch: string): string {
+  // ต่างจากหัวการ์ด: คำค้นเก็บชื่ออังกฤษในวงเล็บไว้ด้วย เพราะชื่อไทยใน Sheet สะกดไม่ตรง
+  // ('เซนทรัล' ไม่มีไม้ไต่คู้) ใส่ทั้งสองภาษาช่วยให้ Maps หาเจอมากกว่า — ตัดเลขชั้นทิ้งอย่างเดียว
+  const searchable = branch
+    .replace(/\bfl\.?\s*\d+\b/gi, ' ')
+    .replace(/[()]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const query = `${brand} ${searchable || cleanBranchName(branch)}`.trim()
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`
+}
+
+function zoneBranchBubble(entry: ZoneBranchEntry, overflowNote: string | null): messagingApi.FlexBubble {
+  const theme = brandTheme(entry.brand)
+  const shown = entry.positions.slice(0, MAX_POSITIONS_PER_BRANCH)
+  const rest = entry.positions.length - shown.length
+
+  const body: messagingApi.FlexComponent[] = shown.map((position) => ({
+    type: 'text', text: `• ${position}`, size: 'sm', color: TEXT_MAIN, wrap: true,
+  }))
+  if (rest > 0) {
+    body.push({ type: 'text', text: `• และอีก ${rest} ตำแหน่ง`, size: 'xs', color: TEXT_MUTED, wrap: true })
+  }
+  if (overflowNote) {
+    body.push({ type: 'text', text: overflowNote, size: 'xs', color: TEXT_MUTED, wrap: true, margin: 'md' })
+  }
+
+  return {
+    type: 'bubble',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: 'lg',
+      backgroundColor: theme.header,
+      contents: [
+        { type: 'text', text: entry.brand, size: 'xs', color: '#FFFFFF', wrap: true },
+        { type: 'text', text: `📍 ${cleanBranchName(entry.branch)}`, size: 'lg', weight: 'bold', color: '#FFFFFF', wrap: true },
+        { type: 'text', text: `${entry.positions.length} ตำแหน่ง`, size: 'xs', color: '#FFFFFF' },
+      ],
+    },
+    body: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: 'lg', contents: body },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      spacing: 'sm',
+      paddingAll: 'lg',
+      contents: [
+        {
+          type: 'button',
+          style: 'secondary',
+          height: 'sm',
+          action: { type: 'uri', label: 'ดูแผนที่', uri: mapsSearchUrl(entry.brand, entry.branch) },
+        },
+        {
+          type: 'button',
+          style: 'primary',
+          height: 'sm',
+          color: theme.header,
+          action: { type: 'message', label: 'สมัครงานออนไลน์', text: APPLY_ONLINE_TEXT },
+        },
+      ],
+    },
+  }
+}
+
+// carousel 1 การ์ดต่อ 1 คู่ (แบรนด์ × สาขา) — คืน null เมื่อโซนนั้นไม่มีสาขาเปิดรับ
+export function buildZoneBranchesFlex(zoneName: string, entries: ZoneBranchEntry[]): messagingApi.FlexMessage | null {
+  const usable = entries.filter((e) => e.positions.length > 0)
+  if (usable.length === 0) return null
+
+  const shown = usable.slice(0, MAX_BRANDS)
+  const hidden = usable.length - shown.length
+  // เกิน 12 bubble ใส่ไม่ได้ (ลิมิต carousel) → บอกจำนวนที่เหลือไว้ในการ์ดใบสุดท้าย
+  const overflowNote = hidden > 0 ? `ยังมีอีก ${hidden} สาขาในโซนนี้ค่ะ พิมพ์ชื่อสาขาถามได้เลยนะคะ` : null
+
+  return {
+    type: 'flex',
+    altText: `สาขาที่เปิดรับสมัครในโซน ${zoneName}`.slice(0, 400),
+    contents: {
+      type: 'carousel',
+      contents: shown.map((entry, i) => zoneBranchBubble(entry, i === shown.length - 1 ? overflowNote : null)),
     },
   }
 }

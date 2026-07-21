@@ -6,7 +6,8 @@ import { generateReply, doubleCheck, DEFAULT_REPLY, extractApplicationInfo, extr
 import { notifyHrGroup, notifyHrApplicant, notifyHrHandover } from '@/lib/line/notify'
 import { getState, setState, WELCOME_MESSAGE, NON_THAI_DOCS, NON_THAI_BRAND_RULE, isForeignEligibleBrand, buildNonThaiWrongBrandMessage, APPLY_PROMPT, FAQ_INTRO, FAQ_AGE_ANSWER, FAQ_PARTTIME_FALLBACK, BENEFIT_ASK, BENEFIT_ASK_HANDOVER, AI_UNAVAILABLE, buildSummaryMessage, buildMissingMessage, type UserState } from '@/lib/session/screening'
 import { detectRichMenuIntent, parsePostbackIntent, isSilentMenuText, READ_ONLY_INTENTS, type MenuIntent } from '@/lib/line/menu'
-import { buildPerksFlex, buildFaqQuickReply, buildJobsFlex, type BrandJobGroup } from '@/lib/line/flex'
+import { buildPerksFlex, buildFaqQuickReply, buildJobsFlex, buildZonePickerReply, buildZoneBranchesFlex, type BrandJobGroup, type ZoneBranchEntry } from '@/lib/line/flex'
+import { detectZone, zoneName, parseZonePostback, ZONE_IDS, type ZoneId } from '@/lib/line/zones'
 import type { JobListing } from '@/types/job'
 
 export const maxDuration = 30
@@ -161,6 +162,15 @@ async function handleFollow(event: webhook.FollowEvent): Promise<void> {
 async function handlePostback(event: webhook.PostbackEvent): Promise<void> {
   const replyToken = event.replyToken
   if (!replyToken) return
+
+  // ปุ่มเลือกโซนจาก "เช็คสาขาใกล้บ้านคุณ" — ต้องเช็คก่อน parsePostbackIntent()
+  // เพราะเป็นการอ่านข้อมูลล้วน ไม่ต้องดึงโปรไฟล์/แตะ state (ทำงานได้แม้อยู่โหมด handover)
+  const zone = parseZonePostback(event.postback?.data)
+  if (zone) {
+    await sendReply(replyToken, await buildZoneBranchesReply(zone))
+    return
+  }
+
   const intent = parsePostbackIntent(event.postback?.data)
   if (!intent) return
 
@@ -654,32 +664,60 @@ async function buildJobsListReply(): Promise<ReplyItem[]> {
   ]
 }
 
-// ปุ่ม Rich Menu "เช็คสาขาใกล้บ้านคุณ" — ลิสต์สาขาที่มีตำแหน่งเปิดจริง จัดกลุ่มตามแบรนด์
-async function buildBranchesReply(): Promise<string> {
+const NO_OPEN_BRANCHES = 'ขณะนี้ยังไม่มีสาขาที่เปิดรับสมัครค่ะ 😔 หากมีข่าวสารจะรีบแจ้งนะคะ'
+
+// จัดกลุ่มงานที่เปิดรับเป็น โซน → (แบรนด์ × สาขา) → ตำแหน่ง[]
+// สาขาเดียวกันที่มีหลายแบรนด์นับแยกกัน (เช่น ไอคอนสยาม มีทั้ง Khao So-i และ Potato Corner)
+function groupOpenJobsByZone(jobs: JobListing[]): Map<ZoneId, ZoneBranchEntry[]> {
+  const byZone = new Map<ZoneId, ZoneBranchEntry[]>()
+  for (const job of jobs) {
+    const zone = detectZone(job.branch)
+    const entries = byZone.get(zone) ?? []
+    let entry = entries.find((e) => e.brand === job.brand && e.branch === job.branch)
+    if (!entry) {
+      entry = { brand: job.brand, branch: job.branch, positions: [] }
+      entries.push(entry)
+    }
+    if (!entry.positions.includes(job.jobTitle)) entry.positions.push(job.jobTitle)
+    byZone.set(zone, entries)
+  }
+  return byZone
+}
+
+// ปุ่ม Rich Menu "เช็คสาขาใกล้บ้านคุณ" — ให้เลือกย่านก่อน แล้วค่อยโชว์สาขาในย่านนั้น
+//
+// Sheet ไม่มีพิกัดสาขา จึงเรียงตามระยะทางจริงไม่ได้ — จัดเป็นโซนให้ผู้สมัครเลือกเองแทน
+// โชว์เฉพาะโซนที่มีสาขาเปิดรับจริง เพื่อไม่ให้กดแล้วเจอ "ไม่มีสาขา"
+async function buildBranchesReply(): Promise<ReplyItem> {
   const jobs = await fetchJobs()
   const openJobs = jobs.filter((j) => isOpen(j.status))
+  if (openJobs.length === 0) return NO_OPEN_BRANCHES
 
-  if (openJobs.length === 0) {
-    return 'ขณะนี้ยังไม่มีสาขาที่เปิดรับสมัครค่ะ 😔 หากมีข่าวสารจะรีบแจ้งนะคะ'
+  const byZone = groupOpenJobsByZone(openJobs)
+  const available = ZONE_IDS.filter((id) => (byZone.get(id)?.length ?? 0) > 0)
+  if (available.length === 0) return NO_OPEN_BRANCHES
+
+  return buildZonePickerReply(
+    'พี่ร็อคกี้ช่วยหาสาขาใกล้บ้านให้ได้ค่ะ 🗺️\n👇 น้องสะดวกเดินทางย่านไหน กดเลือกได้เลยนะคะ 😊',
+    available,
+  )
+}
+
+// ผู้ใช้กดปุ่มโซน → carousel สาขาในโซนนั้น (อ่านอย่างเดียว ไม่แตะ state)
+async function buildZoneBranchesReply(zone: ZoneId): Promise<ReplyItem[]> {
+  const jobs = await fetchJobs()
+  const openJobs = jobs.filter((j) => isOpen(j.status))
+  const entries = groupOpenJobsByZone(openJobs).get(zone) ?? []
+
+  const flex = buildZoneBranchesFlex(zoneName(zone), entries)
+  if (!flex) {
+    return [`ตอนนี้ยังไม่มีสาขาที่เปิดรับในโซน${zoneName(zone)}ค่ะ 😔\nลองเลือกโซนอื่น หรือพิมพ์ชื่อย่านที่สะดวกมาได้เลยนะคะ 😊`]
   }
 
-  // brand → branches[] (คงลำดับที่พบ, ไม่ซ้ำ)
-  const brandOrder: string[] = []
-  const byBrand: Record<string, string[]> = {}
-  for (const job of openJobs) {
-    if (!byBrand[job.brand]) { byBrand[job.brand] = []; brandOrder.push(job.brand) }
-    if (!byBrand[job.brand].includes(job.branch)) byBrand[job.brand].push(job.branch)
-  }
-
-  const blocks = brandOrder.map((brand) => {
-    const bullets = byBrand[brand].map((branch) => `📍 ${branch}`).join('\n')
-    return `🏢 แบรนด์ ${brand}:\n${bullets}`
-  })
-
-  const header = 'สาขาที่กำลังเปิดรับสมัครอยู่ตอนนี้ค่ะ 🗺️'
-  const cta = '👇 สะดวกสาขาไหน หรืออยู่ย่านไหน พิมพ์บอกพี่ร็อคกี้ได้เลยนะคะ เดี๋ยวเช็กตำแหน่งที่เปิดในสาขานั้นให้ค่ะ 😊'
-
-  return `${header}\n\n${blocks.join('\n\n')}\n\n${cta}`
+  return [
+    `สาขาที่เปิดรับสมัครในโซน${zoneName(zone)}ค่ะ 😊\n👇 กด "ดูแผนที่" เช็กระยะทางจากบ้านได้เลยนะคะ`,
+    flex,
+  ]
 }
 
 // Quick Reply "รับพาร์ทไทม์ไหม?" — ตอบจากคอลัมน์ Job_Type ใน Sheet (ข้อมูลจริง ไม่แต่งเอง)
