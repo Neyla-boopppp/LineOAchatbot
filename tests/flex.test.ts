@@ -11,17 +11,28 @@ describe('buildPerksFlex — การ์ดสรุปสิทธิที่
     expect(flex.altText.length).toBeLessThanOrEqual(400)
   })
 
-  it('ครบทั้ง 5 สิทธิตาม brief', () => {
+  it('ครบทั้ง 6 สิทธิตรงกับคอลัมน์ Benefit ใน Google Sheet', () => {
     const json = JSON.stringify(flex)
-    for (const keyword of ['เงินเดือนเริ่มต้น', 'Incentive', 'ส่วนลดค่าอาหาร', 'ประกันสุขภาพ', 'ยูนิฟอร์มฟรี']) {
+    for (const keyword of [
+      'Service Charge',
+      'ค่าอาหาร 910 บาท/เดือน',
+      'เบี้ยขยัน 700 บาท/เดือน',
+      'กองทุนสำรองเลี้ยงชีพ',
+      'ประกันสังคม',
+      'ยูนิฟอร์ม',
+    ]) {
       expect(json).toContain(keyword)
     }
   })
 
-  it('ระบุครบทั้ง 3 แบรนด์ในเครือ', () => {
+  it('ไม่ระบุเงินเดือนในการ์ด (ตั้งใจให้ผู้สมัครถามเข้ามาเอง)', () => {
+    expect(JSON.stringify(flex)).not.toContain('เงินเดือน')
+  })
+
+  it('ไม่มีสวัสดิการที่ Sheet ไม่ได้ระบุ (กันบอทแต่งข้อมูลเอง)', () => {
     const json = JSON.stringify(flex)
-    for (const brand of ['Potato Corner', 'Khao So-i', 'Uno Coffee']) {
-      expect(json).toContain(brand)
+    for (const invented of ['Incentive', 'ส่วนลดค่าอาหาร', 'ประกันสุขภาพ', 'Uno Coffee']) {
+      expect(json).not.toContain(invented)
     }
   })
 

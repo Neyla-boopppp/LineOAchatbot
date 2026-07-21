@@ -14,17 +14,34 @@ const TEXT_MAIN = '#333333'
 // เพื่อไหลเข้า intent 'benefits' เดิม (ดึงสวัสดิการรายตำแหน่งจาก Sheet)
 export const PERKS_DETAIL_TEXT = 'สวัสดิการและผลตอบแทน'
 
-// รายการสิทธิที่จะได้รับ — คงที่ทั้งกลุ่ม (ไม่ขึ้นกับแบรนด์/ตำแหน่ง)
-// TODO: เติมตัวเลขจริง (เงินเดือนเริ่มต้น / % incentive / % ส่วนลดอาหาร) เมื่อ HR ยืนยัน
-const PERKS: { emoji: string; title: string; detail: string }[] = [
-  { emoji: '💰', title: 'เงินเดือนเริ่มต้น', detail: 'ฐานเงินเดือนประจำ ปรับตามประสบการณ์' },
-  { emoji: '📈', title: 'Incentive ยอดขายร้าน', detail: 'ทำยอดได้ตามเป้า รับเพิ่มทุกเดือน' },
-  { emoji: '🍟', title: 'ส่วนลดค่าอาหารในเครือ', detail: 'กิน Potato Corner, Khao So-i, Uno Coffee ราคาพนักงาน' },
-  { emoji: '🏥', title: 'ประกันสุขภาพ', detail: 'ดูแลค่ารักษาพยาบาลตลอดการทำงาน' },
-  { emoji: '👕', title: 'ยูนิฟอร์มฟรี', detail: 'รับชุดพนักงานฟรี ไม่หักเงินประกันชุด' },
+// รายการสิทธิที่จะได้รับ
+//
+// ⚠️ แหล่งที่มา: คัดลอกจากคอลัมน์ `Benefit` ใน Google Sheet (ชีต Job_Vacancies) เมื่อ 2026-07-21
+//    ห้ามแต่งตัวเลข/สวัสดิการเพิ่มเอง — ถ้า Sheet เปลี่ยน ต้องกลับมาแก้ที่นี่ด้วย
+//    (ตอนคัดลอก คอลัมน์นี้มีข้อมูลเฉพาะแบรนด์ Khao So-i — Potato Corner ยังว่าง
+//     จึงต้องไม่สื่อว่าทุกแบรนด์/ทุกตำแหน่งได้ครบทุกข้อ ดู caption ท้ายการ์ด)
+//
+// ไม่ใส่ "เงินเดือนเริ่มต้น" โดยตั้งใจ — ระบุไว้ในโพสรับสมัครแล้ว และอยากให้ผู้สมัครถามเข้ามาเอง
+// เพื่อให้บอทตอบเป็นรายตำแหน่งจาก Sheet ได้ตรงกว่า
+type Perk = { emoji: string; title: string; detail?: string }
+
+const PERKS: Perk[] = [
+  { emoji: '✨', title: 'Service Charge', detail: 'ตามผลประกอบการของร้าน' },
+  { emoji: '🍚', title: 'ค่าอาหาร 910 บาท/เดือน' },
+  { emoji: '💸', title: 'เบี้ยขยัน 700 บาท/เดือน', detail: 'กรณีไม่ขาด ลา มาสาย' },
+  { emoji: '🏦', title: 'กองทุนสำรองเลี้ยงชีพ' },
+  { emoji: '🏥', title: 'ประกันสังคม' },
+  { emoji: '👕', title: 'ชุดยูนิฟอร์มพนักงาน' },
 ]
 
-function perkRow(perk: { emoji: string; title: string; detail: string }): messagingApi.FlexBox {
+function perkRow(perk: Perk): messagingApi.FlexBox {
+  // LINE ไม่รับ text ว่าง — ข้อไหนไม่มีคำขยายให้ตัดบรรทัดที่สองทิ้งไปเลย
+  const lines: messagingApi.FlexComponent[] = [
+    { type: 'text', text: perk.title, size: 'sm', weight: 'bold', color: TEXT_MAIN, wrap: true },
+  ]
+  if (perk.detail) {
+    lines.push({ type: 'text', text: perk.detail, size: 'xs', color: TEXT_MUTED, wrap: true })
+  }
   return {
     type: 'box',
     layout: 'horizontal',
@@ -35,10 +52,7 @@ function perkRow(perk: { emoji: string; title: string; detail: string }): messag
         type: 'box',
         layout: 'vertical',
         spacing: 'none',
-        contents: [
-          { type: 'text', text: perk.title, size: 'sm', weight: 'bold', color: TEXT_MAIN, wrap: true },
-          { type: 'text', text: perk.detail, size: 'xs', color: TEXT_MUTED, wrap: true },
-        ],
+        contents: lines,
       },
     ],
   }
@@ -58,7 +72,7 @@ export function buildPerksFlex(): messagingApi.FlexMessage {
         backgroundColor: BRAND_COLOR,
         contents: [
           { type: 'text', text: 'ร่วมงานกับ Rocks Group', size: 'xs', color: '#FFFFFFCC' },
-          { type: 'text', text: 'สิทธิที่น้องๆ จะได้รับ ✨', size: 'lg', weight: 'bold', color: '#FFFFFF', wrap: true },
+          { type: 'text', text: 'ตัวอย่างสิทธิที่น้องๆ จะได้รับ ✨', size: 'lg', weight: 'bold', color: '#FFFFFF', wrap: true },
         ],
       },
       body: {
@@ -83,7 +97,7 @@ export function buildPerksFlex(): messagingApi.FlexMessage {
           },
           {
             type: 'text',
-            text: 'สวัสดิการบางข้ออาจต่างกันตามตำแหน่งและสาขานะคะ 😊',
+            text: 'สวัสดิการต่างกันตามแบรนด์ ตำแหน่ง และสาขานะคะ\nอยากรู้ของตำแหน่งไหน ถามพี่ร็อคกี้ได้เลย 😊',
             size: 'xxs',
             color: TEXT_MUTED,
             wrap: true,
