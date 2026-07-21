@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { detectRichMenuIntent, parsePostbackIntent, READ_ONLY_INTENTS } from '../lib/line/menu'
+import { detectRichMenuIntent, parsePostbackIntent, isSilentMenuText, READ_ONLY_INTENTS } from '../lib/line/menu'
 
 describe('detectRichMenuIntent — ปุ่ม Rich Menu จริงทั้ง 6 ปุ่ม', () => {
   it.each([
     ['ตำแหน่งงานที่เปิดรับ', 'jobs'],
-    ['สมัครงานออนไลน์', 'apply'],
+    ['สมัครงาน', 'apply'],
     ['เช็คสาขาใกล้บ้านคุณ', 'branches'],
     ['คำถามที่พบบ่อย', 'faq'],
     ['สวัสดิการและผลตอบแทน', 'benefits'],
@@ -37,6 +37,76 @@ describe('READ_ONLY_INTENTS', () => {
     for (const i of ['jobs', 'docs', 'benefits', 'branches', 'faq'] as const) {
       expect(READ_ONLY_INTENTS.has(i)).toBe(true)
     }
+  })
+})
+
+describe('Rich Menu ชุดใหม่ (v2)', () => {
+  it.each([
+    ['สิทธิที่จะได้รับ', 'perks'],
+    ['สวัสดิการที่จะได้รับ', 'perks'],
+    ['ทิ้งข้อความถึง HR', 'contact'],
+    ['สอบถามเพิ่มเติม', 'contact'],
+  ])('label ใหม่ "%s" → intent %s', (label, expected) => {
+    expect(detectRichMenuIntent(label)).toBe(expected)
+  })
+
+  it('perks กับ benefits เป็นคนละ intent (การ์ดคงที่ vs ดึงจาก Sheet)', () => {
+    expect(detectRichMenuIntent('สิทธิที่จะได้รับ')).toBe('perks')
+    expect(detectRichMenuIntent('สวัสดิการและผลตอบแทน')).toBe('benefits')
+  })
+
+  it('intent ใหม่ทั้งหมดเป็น read-only (ตอบได้แม้อยู่โหมด handover)', () => {
+    for (const i of ['perks', 'faq_age', 'faq_parttime'] as const) {
+      expect(READ_ONLY_INTENTS.has(i)).toBe(true)
+    }
+  })
+})
+
+describe('Quick Reply จากปุ่มคำถามที่พบบ่อย', () => {
+  it.each([
+    ['รับอายุเท่าไหร่?', 'faq_age'],
+    ['รับพาร์ทไทม์ไหม?', 'faq_parttime'],
+    ['สิทธิที่จะได้รับ', 'perks'],
+    ['ใช้เอกสารอะไรบ้าง?', 'docs'],
+    ['ตำแหน่งงานที่เปิดรับ', 'jobs'],
+  ])('quick reply "%s" → intent %s', (text, expected) => {
+    expect(detectRichMenuIntent(text)).toBe(expected)
+  })
+})
+
+describe('isSilentMenuText — ปุ่มที่ OA Manager ตอบเอง (RM1 + RM2)', () => {
+  // label จริงจาก OA Manager ยืนยันแล้ว 2026-07-21 — ปุ่มสองอันนี้ OA Manager ตอบด้วยการ์ด
+  it.each(['ค้นหาตำแหน่งงาน', 'ค้นหาตำแหน่งงานที่ใช่สำหรับคุณ', 'สมัครงานออนไลน์'])(
+    '"%s" → บอทเงียบ',
+    (label) => {
+      expect(isSilentMenuText(label)).toBe(true)
+    }
+  )
+
+  it('ปุ่มเงียบต้องไม่ถูก detectRichMenuIntent ดักไปตอบเป็นข้อความ', () => {
+    // 'สมัครงานออนไลน์' เคยอยู่ใน RICH_MENU_APPLY_TEXTS → กดแล้วบอทตอบ APPLY_PROMPT ทับการ์ด
+    expect(detectRichMenuIntent('สมัครงานออนไลน์')).toBeNull()
+    expect(detectRichMenuIntent('ค้นหาตำแหน่งงาน')).toBeNull()
+  })
+
+  it('ปุ่มที่บอทต้องตอบ ไม่ถูกกลืนหายไป', () => {
+    for (const label of ['ตำแหน่งงานที่เปิดรับ', 'สิทธิที่จะได้รับ', 'คำถามที่พบบ่อย', 'ติดต่อเจ้าหน้าที่']) {
+      expect(isSilentMenuText(label)).toBe(false)
+      expect(detectRichMenuIntent(label)).not.toBeNull()
+    }
+  })
+
+  it('ผู้ใช้พิมพ์ "สมัครงาน" เองยังเข้า intent apply ได้', () => {
+    expect(isSilentMenuText('สมัครงาน')).toBe(false)
+    expect(detectRichMenuIntent('สมัครงาน')).toBe('apply')
+    expect(detectRichMenuIntent('สมัครออนไลน์')).toBe('apply')
+  })
+
+  it('ข้อความทั่วไปไม่ถูกทำให้เงียบ (match ทั้งก้อนเท่านั้น)', () => {
+    expect(isSilentMenuText('อยากสมัครงานครับ')).toBe(false)
+    expect(isSilentMenuText('อยากสมัครงานออนไลน์ครับ')).toBe(false)
+    expect(isSilentMenuText('ช่วยค้นหาตำแหน่งงานให้หน่อย')).toBe(false)
+    expect(isSilentMenuText('สวัสดีค่ะ')).toBe(false)
   })
 })
 
