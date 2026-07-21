@@ -7,12 +7,37 @@
 
 ## ⚠️ สิ่งที่ต้องรู้ก่อนทำต่อ (สำคัญสุด)
 
-1. **Production ล้ำหน้า `main` อยู่** — โค้ดที่รันจริงบน production มาจาก branch
-   `fix/bot-reply-quality` (3 commits) ที่ **ยังไม่ push และยังไม่ merge เข้า main**
-   → `main` ตอนนี้ **เก่ากว่าของจริงที่รันอยู่** ต้อง push + merge ให้ตรงกัน
-2. **Deploy ด้วย Vercel CLI ตรงๆ** ไม่ผ่าน git — `npx vercel --prod --yes` deploy จาก
-   working tree ปัจจุบัน (ไม่ได้ผูกกับ branch/commit) Vercel CLI login ไว้แล้วใน session ก่อน
-3. LINE webhook ชี้ **production URL ตายตัว** → preview deploy จะไม่ได้รับ event จริงจาก LINE
+1. ~~**Production ล้ำหน้า `main` อยู่**~~ → **แก้แล้ว 2026-07-21**: push `fix/bot-reply-quality`
+   ขึ้น origin + merge เข้า `main` เรียบร้อย ตอนนี้ `main` = `fix/bot-reply-quality` = production
+   ที่ commit `f96a7c5`
+2. **⚠️ โปรเจกต์ผูก Git integration อยู่ — push `main` = deploy production อัตโนมัติ**
+   (ค้นพบ 2026-07-21: มี alias `lineoa-chatbot-git-main-neyla-s-projects.vercel.app` และการ push
+   main ครั้งนี้ trigger production deploy ทันที) ข้อมูลเดิมที่เขียนว่า "deploy ผ่าน CLI เท่านั้น
+   ไม่ผูก git" **ไม่ถูกต้อง** → ห้าม push main เว้นแต่ตั้งใจจะ deploy จริง
+3. **Deploy ด้วย Vercel CLI ก็ยังใช้ได้** — `npx vercel --prod --yes` deploy จาก working tree
+   ปัจจุบัน (ไม่ผูกกับ branch/commit)
+4. LINE webhook ชี้ **production URL ตายตัว** → preview deploy จะไม่ได้รับ event จริงจาก LINE
+
+---
+
+## 🔒 จุดสำรอง / Rollback (ตั้งไว้ 2026-07-21 ก่อนปรับ Rich Menu ชุดใหม่)
+
+| | |
+|---|---|
+| Git tag ตัวที่บอทตอบดี | `v1-stable-bot` → commit `f96a7c5` (push ขึ้น origin แล้ว) |
+| Branch สำรอง | `origin/fix/bot-reply-quality` และ `origin/main` (ทั้งคู่ = `f96a7c5`) |
+| Production deployment ตอนนี้ | `dpl_5HuG125X9rFD3NBUv3Mr3mgA2t4S` |
+| URL ตรงของ deployment นั้น | https://lineoa-chatbot-7dqpgq7aa-neyla-s-projects.vercel.app |
+| สถานะตอนจด | ● Ready · target production · `GET /` → 200 · `POST /api/webhook` (ไม่มี signature) → 401 |
+
+**วิธีกู้คืน**
+```bash
+# กู้โค้ด
+git checkout v1-stable-bot
+
+# กู้ production ทันที (ไม่ต้อง build ใหม่)
+npx vercel rollback https://lineoa-chatbot-7dqpgq7aa-neyla-s-projects.vercel.app
+```
 
 ---
 
