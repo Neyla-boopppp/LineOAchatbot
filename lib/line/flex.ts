@@ -122,24 +122,25 @@ export type BrandJobGroup = {
 // (ตั้ง NEXT_PUBLIC_BASE_URL ทับได้ เผื่อวันหน้าเปลี่ยนโดเมน)
 const BASE_URL = (process.env.NEXT_PUBLIC_BASE_URL ?? 'https://lineoa-chatbot.vercel.app').replace(/\/$/, '')
 
-// สีพื้นต้องตรงกับพื้นหลังที่ติดมากับไฟล์โลโก้ เพราะใช้ aspectMode 'fit'
+// ธีมของแต่ละแบรนด์ — ค่าสีดึงมาจากพิกเซลในไฟล์โลโก้จริง (นับสีที่พบบ่อยสุด) ไม่ได้เดา
+//
+// logoBackground ต้องตรงกับพื้นหลังที่ติดมากับไฟล์ เพราะใช้ aspectMode 'fit'
 // (โลโก้แต่ละแบรนด์สัดส่วนไม่เท่ากัน ถ้าใช้ 'cover' โลโก้แนวยาวอย่าง Potato Corner จะโดนครอบตัด)
-const BRAND_LOGOS: { match: string; file: string; background: string }[] = [
-  { match: 'khaosoi', file: 'khao-so-i.png', background: '#5E4620' },
-  { match: 'potatocorner', file: 'potato-corner.png', background: '#FFFFFF' },
-  { match: 'uno', file: 'uno-coffee.png', background: '#E8E3C8' },
+// header ต้องเข้มพอให้ตัวหนังสือสีขาวอ่านออก — Uno เลือกแดง #BB2A04 แทนดำล้วนที่ดูแข็งเกินไป
+const BRAND_THEMES: { match: string; file: string; logoBackground: string; header: string }[] = [
+  { match: 'khaosoi', file: 'khao-so-i.png', logoBackground: '#5A4118', header: '#5A4118' },
+  { match: 'potatocorner', file: 'potato-corner.png', logoBackground: '#FFFFFF', header: '#129046' },
+  { match: 'uno', file: 'uno-coffee.png', logoBackground: '#E9E3C8', header: '#BB2A04' },
 ]
 
-function brandLogo(brand: string): { url: string; background: string } | null {
-  const n = brand.toLowerCase().replace(/[-\s!]+/g, '')
-  const hit = BRAND_LOGOS.find((logo) => n.includes(logo.match))
-  return hit ? { url: `${BASE_URL}/brands/${hit.file}`, background: hit.background } : null
-}
+type BrandTheme = { logoUrl: string | null; logoBackground: string; header: string }
 
-// ปุ่มท้ายการ์ดแต่ละแบรนด์ → ส่งชื่อแบรนด์เข้า flow เก็บข้อมูลปกติ
-// (ไม่ match Rich Menu intent ใด ๆ จึงไหลไป extractApplicationInfo แล้วถามตำแหน่ง/สาขาต่อ)
-export function buildBrandInterestText(brand: string): string {
-  return `สนใจสมัคร ${brand}`
+// แบรนด์ที่ยังไม่มีธีม → ใช้สีกลางของ Rocks Group และไม่ใส่โลโก้
+function brandTheme(brand: string): BrandTheme {
+  const n = brand.toLowerCase().replace(/[-\s!]+/g, '')
+  const hit = BRAND_THEMES.find((theme) => n.includes(theme.match))
+  if (!hit) return { logoUrl: null, logoBackground: BRAND_COLOR, header: BRAND_COLOR }
+  return { logoUrl: `${BASE_URL}/brands/${hit.file}`, logoBackground: hit.logoBackground, header: hit.header }
 }
 
 // 1 สาขา = 1 กล่อง (ตำแหน่งชิดใต้ชื่อสาขา) — ระยะห่างระหว่างสาขาคุมที่กล่องนอก
@@ -169,53 +170,47 @@ function brandBubble(group: BrandJobGroup): messagingApi.FlexBubble {
     body.push({ type: 'text', text: `และอีก ${hiddenBranches} สาขา`, size: 'xs', color: TEXT_MUTED, wrap: true })
   }
 
-  const logo = brandLogo(group.brand)
+  const theme = brandTheme(group.brand)
 
   return {
     type: 'bubble',
     // แบรนด์ที่ยังไม่มีไฟล์โลโก้ → ไม่ใส่ hero ไปเลย (การ์ดยังใช้ได้ปกติ ไม่ขึ้นรูปเสีย)
-    ...(logo && {
+    ...(theme.logoUrl && {
       hero: {
         type: 'image' as const,
-        url: logo.url,
+        url: theme.logoUrl,
         size: 'full' as const,
         aspectRatio: '20:13',
         aspectMode: 'fit' as const,
-        backgroundColor: logo.background,
+        backgroundColor: theme.logoBackground,
       },
     }),
     header: {
       type: 'box',
       layout: 'vertical',
       paddingAll: 'lg',
-      backgroundColor: BRAND_COLOR,
+      backgroundColor: theme.header,
+      // ใช้ขาวทึบทั้งหมด ไม่ใส่ alpha — สีแบรนด์บางตัว (เขียว Potato Corner) คอนทราสต์ไม่สูงนัก
+      // ถ้าลดความทึบลงอีกตัวหนังสือเล็กจะอ่านยากบนจอกลางแดด
       contents: [
-        { type: 'text', text: 'ตำแหน่งงานที่เปิดรับ', size: 'xs', color: '#FFFFFFCC' },
+        { type: 'text', text: 'ตำแหน่งงานที่เปิดรับ', size: 'xs', color: '#FFFFFF' },
         { type: 'text', text: group.brand, size: 'lg', weight: 'bold', color: '#FFFFFF', wrap: true },
-        { type: 'text', text: `${totalPositions} ตำแหน่ง`, size: 'xs', color: '#FFFFFFCC' },
+        { type: 'text', text: `${totalPositions} ตำแหน่ง`, size: 'xs', color: '#FFFFFF' },
       ],
     },
     body: { type: 'box', layout: 'vertical', spacing: 'md', paddingAll: 'lg', contents: body },
+    // ปุ่มเดียว — เลียนแบบการกดปุ่ม RM2 ให้บอทเงียบแล้ว OA Manager เด้งการ์ดสมัครงานขึ้นมา
+    // (ปุ่ม Flex สลับ Rich Menu เองไม่ได้ ดูคอมเมนต์ที่ APPLY_ONLINE_TEXT ใน menu.ts)
     footer: {
       type: 'box',
       layout: 'vertical',
-      spacing: 'sm',
       paddingAll: 'lg',
       contents: [
-        // เข้า flow บอท — เก็บบริบทแบรนด์ไว้ แล้วบอทถามตำแหน่ง/สาขาต่อ
         {
           type: 'button',
           style: 'primary',
           height: 'sm',
-          color: BRAND_COLOR,
-          action: { type: 'message', label: 'สนใจแบรนด์นี้', text: buildBrandInterestText(group.brand) },
-        },
-        // เลียนแบบการกดปุ่ม RM2 — บอทเงียบ แล้ว OA Manager เด้งการ์ดสมัครงานขึ้นมา
-        // (ปุ่ม Flex สลับ Rich Menu เองไม่ได้ ดูคอมเมนต์ที่ APPLY_ONLINE_TEXT ใน menu.ts)
-        {
-          type: 'button',
-          style: 'secondary',
-          height: 'sm',
+          color: theme.header,
           action: { type: 'message', label: 'สมัครงานออนไลน์', text: APPLY_ONLINE_TEXT },
         },
       ],
